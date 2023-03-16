@@ -1,5 +1,5 @@
 {
-  "name": "node-agwpe",
+  "name": "@jmkristian/node-agwpe",
   "version": "0.1.0",
   "description": "Communicate via AX.25 in the style of node net, using an AGWPE-compatible TNC.",
   "main": "index.js",
@@ -26,5 +26,6 @@
   "bugs": {
     "url": "https://github.com/jmkristian/node-agwpe/issues"
   },
-  "homepage": "https://github.com/jmkristian/node-agwpe#readme"
+  "homepage": "https://github.com/jmkristian/node-agwpe#readme",
+  "devDependencies": {}
 }
