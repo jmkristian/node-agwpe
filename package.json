@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "description": "API for accessing an AGWPE-compatible TNC, in the style of node net.",
   "main": "index.js",
+  "engines": {
+    "node": ">=8.17.0"
+  },
+  "dependencies": {
+    "bunyan": "^1.8.15"
+  },
   "scripts": {
     "test": "echo No test specified"
   },
@@ -12,6 +18,7 @@
   },
   "keywords": [
     "AGWPE",
+    "AX.25",
     "net"
   ],
   "author": "John Kristian",
