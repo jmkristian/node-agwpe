@@ -4,7 +4,9 @@ Communicate via AX.25 in the style of
 using an AGWPE-compatible TNC.
 
 ```js
-const AGWPE = require('agwpe');
+const AGWPE = require('node-agwpe');
+const Bunyan = require('bunyan');
+
 var server = new AGWPE.Server ({
     host: 'agwpe-server-host', // default: localhost
     port: 8000, // default: 8000
@@ -16,17 +18,19 @@ var server = new AGWPE.Server ({
         Large values may not work at all; for example Direwolf v1.7a will
         reset the TCP connection if you send much more than 2 KBytes.
         */
-    logger: bunyan.createLogger({name: "myapp"}), /* default: no logging
+    logger: Bunyan.createLogger({name: "myapp"}), /* default: no logging
         An object compatible with the Bunyan logger interface, or null.
         */
 });
 server.on('connection', function(connection) {
-    console.log('connection from ' + connection.theirCall);
+    console.log('connection'
+                + ' from ' + connection.theirCall
+                + ' to ' + connection.myCall);
     connection.write(...); // transmit data
-    connection.pipe(...); // process data received
+    connection.pipe(...); // receive data
 });
 server.listen({
-        callTo: ['NOCALL-1']  // A space-separated list of this server's call signs.
+        callTo: ['A1CALL-1', 'B2CALL-10']  // This server's call signs.
     },
     function onListening(info) { // called when the server begins listening
         log.info(`${section} listening %o`, info);
