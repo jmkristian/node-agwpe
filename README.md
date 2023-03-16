@@ -4,7 +4,7 @@ Communicate via AX.25 in the style of
 using an AGWPE-compatible TNC (e.g.
 [Direwolf](https://github.com/wb2osz/direwolf),
 [SoundModem](http://uz7.ho.ua/packetradio.htm) or
-[AGWPE](https://www.sv2agw.com/downloads/).
+[AGWPE](https://www.sv2agw.com/downloads/)).
 
 ```js
 const AGWPE = require('node-agwpe');
