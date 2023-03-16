@@ -1,5 +1,7 @@
 # node-agwpe
-Communicate via AX.25 in the style of node net, using an AGWPE-compatible TNC.
+Communicate via AX.25 in the style of
+[node net](https://nodejs.org/docs/latest-v8.x/api/net.html),
+using an AGWPE-compatible TNC.
 
 ```js
 const AGWPE = require('agwpe');
