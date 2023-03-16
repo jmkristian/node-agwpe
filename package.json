@@ -1,0 +1,23 @@
+{
+  "name": "node-agwpe",
+  "version": "0.1.0",
+  "description": "API for accessing an AGWPE-compatible TNC, in the style of node net.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo No test specified"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jmkristian/node-agwpe.git"
+  },
+  "keywords": [
+    "AGWPE",
+    "net"
+  ],
+  "author": "John Kristian",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/jmkristian/node-agwpe/issues"
+  },
+  "homepage": "https://github.com/jmkristian/node-agwpe#readme"
+}
