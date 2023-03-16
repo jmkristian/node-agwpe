@@ -33,6 +33,6 @@ server.listen({
         callTo: ['A1CALL-1', 'B2CALL-10']  // This server's call signs.
     },
     function onListening(info) { // called when the server begins listening
-        log.info(`${section} listening %o`, info);
+        console.log('AGWPE listening ' + (info || ''));
     });
 ```
