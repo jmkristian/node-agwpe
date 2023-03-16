@@ -1,7 +1,7 @@
 {
   "name": "node-agwpe",
   "version": "0.1.0",
-  "description": "API for accessing an AGWPE-compatible TNC, in the style of node net.",
+  "description": "Communicate via AX.25 in the style of node net, using an AGWPE-compatible TNC.",
   "main": "index.js",
   "engines": {
     "node": ">=8.17.0"

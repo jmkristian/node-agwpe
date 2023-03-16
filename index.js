@@ -1,7 +1,7 @@
 'use strict';
 const server = require('./server.js');
 
-/** API for accessing an AGWPE-compatible TNC, in the style of node net. */
+/** Communicate via AX.25 in the style of node net, using an AGWPE-compatible TNC. */
 
 exports.Reader = server.Reader;
 exports.Writer = server.Writer;
