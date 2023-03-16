@@ -16,9 +16,7 @@ var server = new AGWPE.Server ({
         more than 2 KBytes.
         */
     logger: bunyan.createLogger({name: "myapp"}), /* default: no logging
-        This must be an object compatible with the
-        [Bunyan](https://www.npmjs.com/package/bunyan)
-        logger interface, or null.
+        An object compatible with the Bunyan logger interface, or null.
         */
 });
 server.on('connection', function(connection) {
