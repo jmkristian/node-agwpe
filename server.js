@@ -49,7 +49,7 @@ const NoPID = 0xF0;
 const KByte = 1 << 10;
 
 const LogNothing = Bunyan.createLogger({
-    name: 'stub',
+    name: 'AGWPE',
     level: Bunyan.FATAL + 100,
 });
 
@@ -252,7 +252,7 @@ class AGWReader extends Stream.Transform {
             this.buffer = (newBufferLength <= 0) ? null
                 : copyBuffer(this.buffer, dataLength + this.headerLength);
             if (this.log.debug()) {
-                this.log.debug('AGWPE< %s', getFrameSummary(result));
+                this.log.debug('< %s', getFrameSummary(result));
             }
             this.push(result);
         }
@@ -281,7 +281,7 @@ class AGWWriter extends Stream.Transform {
         } else {
             var frame = toFrame(chunk, encoding);
             if (this.log.debug()) {
-                this.log.debug('AGWPE> %s', getFrameSummary(chunk));
+                this.log.debug('> %s', getFrameSummary(chunk));
             }
             afterTransform(null, frame);
         }
@@ -401,7 +401,7 @@ class PortRouter extends Router {
             break;
         case 'X': // registered myCall
             if (frame.data && frame.data.length > 0 && frame.data[0] == 1) {
-                this.server.emit('listening', {port: frame.port, callTo: frame.callFrom});
+                this.server.emit('listening', {port: frame.port, myCallSign: frame.callFrom});
             } else {
                 this.server.emit('error', 'listen failed: ' + getFrameSummary(frame));
             }
@@ -832,8 +832,8 @@ class Connection extends Stream.Duplex {
         this.log.trace('new %o', options);
         this.toAGW = toAGW;
         this.port = toAGW.port;
-        this.myCall = toAGW.myCall;
-        this.theirCall = toAGW.theirCall;
+        this.myCallSign = toAGW.myCall;
+        this.theirCallSign = toAGW.theirCall;
     }
 
     emitClose() {
@@ -880,7 +880,7 @@ class Connection extends Stream.Duplex {
 /** Similar to net.Server, but for AX.25 connections.
     Each 'connection' event provides a Duplex stream
     for exchanging data via one AX.25 connection.
-    The remote call sign is connection.theirCall.
+    The remote call sign is connection.theirCallSign.
     To disconnect, call connection.end(). The connection
     emits a 'close' event when AX.25 is disconnected.
 */
@@ -923,7 +923,7 @@ class Server extends EventEmitter {
             this.on('listening', callback);
         }
         var that = this;
-        if (options.port == null) {
+        if (options.ports == null) {
             if (this.numberOfPorts == null) {
                 // Postpone this request until we know the numberOfPorts.
                 if (!this.listenBuffer) {
@@ -932,22 +932,22 @@ class Server extends EventEmitter {
                 this.listenBuffer.push(options);
             } else {
                 for (var p = 0; p < this.numberOfPorts; ++p) {
-                    this.listen(mergeOptions(options, {port: p}));
+                    this.listen(mergeOptions(options, {ports: p}));
                 }
             }
-        } else if (Array.isArray(options.port)) {
-            options.port.forEach(function(onePort) {
-                that.listen(mergeOptions(options, {port: onePort}));
+        } else if (Array.isArray(options.ports)) {
+            options.ports.forEach(function(onePort) {
+                that.listen(mergeOptions(options, {ports: onePort}));
             });
-        } else if (Array.isArray(options.callTo)) {
-            options.callTo.forEach(function(oneCall) {
-                that.listen(mergeOptions(options, {callTo: oneCall}));
+        } else if (Array.isArray(options.myCallSigns)) {
+            options.myCallSigns.forEach(function(oneCall) {
+                that.listen(mergeOptions(options, {myCallSigns: oneCall}));
             });
         } else {
             this.toAGW.write({
-                port: options.port,
+                port: options.ports,
                 dataKind: 'X', // Register
-                callFrom: options.callTo,
+                callFrom: options.myCallSigns,
             });
         }
     }

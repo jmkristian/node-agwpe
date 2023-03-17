@@ -7,7 +7,7 @@ using an AGWPE-compatible TNC (e.g.
 [AGWPE](https://www.sv2agw.com/downloads/)).
 
 ```js
-const AGWPE = require('node-agwpe');
+const AGWPE = require('@jmkristian/node-agwpe');
 const Bunyan = require('bunyan');
 
 var server = new AGWPE.Server ({
@@ -21,19 +21,20 @@ var server = new AGWPE.Server ({
         Large values may not work at all; for example Direwolf v1.7a will
         reset the TCP connection if you send much more than 2 KBytes.
         */
-    logger: Bunyan.createLogger({name: "myapp"}), /* default: no logging
+    logger: Bunyan.createLogger({name: "AGWPE"}), /* default: no logging
         An object compatible with the Bunyan logger interface, or null.
         */
 });
 server.on('connection', function(connection) {
     console.log('connection'
-                + ' from ' + connection.theirCall
-                + ' to ' + connection.myCall);
+                + ' from ' + connection.theirCallSign
+                + ' to ' + connection.myCallSign);
     connection.write(...); // transmit data
     connection.pipe(...); // receive data
 });
 server.listen({
-        callTo: ['A1CALL-1', 'B2CALL-10']  // This server's call signs.
+        myCallSigns: ['A1CALL-1', 'B2CALL-10'],  // This server's call signs.
+        ports: [0, 1], // server ports to listen to. Default: all ports
     },
     function onListening(info) { // called when the server begins listening
         console.log('AGWPE listening ' + (info || ''));
