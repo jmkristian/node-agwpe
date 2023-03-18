@@ -1,6 +1,6 @@
 # node-agwpe
 Communicate via AX.25 in the style of
-[node net](https://nodejs.org/docs/latest-v8.x/api/net.html),
+[node Net](https://nodejs.org/docs/latest-v8.x/api/net.html),
 using an AGWPE-compatible TNC (e.g.
 [Direwolf](https://github.com/wb2osz/direwolf),
 [SoundModem](http://uz7.ho.ua/packetradio.htm) or
