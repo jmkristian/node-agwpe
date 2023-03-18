@@ -53,6 +53,12 @@ const LogNothing = Bunyan.createLogger({
     level: Bunyan.FATAL + 100,
 });
 
+function newError(message, code) {
+    const err = new Error(message);
+    err.code = code;
+    return err;
+}
+
 function getLogger(options, that) {
     if (!(options && options.logger)) {
         return LogNothing;
@@ -833,7 +839,7 @@ class Connection extends Stream.Duplex {
         this.toAGW = toAGW;
         this.port = toAGW.port;
         this.myCallSign = toAGW.myCall;
-        this.theirCallSign = toAGW.theirCall;
+        this.iAmClosed = true;
     }
 
     emitClose() {
@@ -888,85 +894,94 @@ class Server extends EventEmitter {
 
     constructor(options, onConnect) {
         super();
+        const that = this;
+        if (onConnect) this.on('connection', onConnect);
+        this.options = options;
         this.log = getLogger(options, this);
         this.numberOfPorts = null; // until notified otherwise
-        this.fromAGW = new AGWReader(options);
-        this.toAGW = new AGWWriter(options);
+        this.fromAGW = new AGWReader(this.options);
+        this.toAGW = new AGWWriter(this.options);
         var relay = new FrameRelay(this.fromAGW, options);
         var router = new PortRouter(this.toAGW, relay, options, this);
-        if (onConnect) this.on('connection', onConnect);
-        var that = this;
-        var givenConnection = options && options && options.connection;
-        var socket = givenConnection || new Net.Socket();
-        ['error', 'timeout'].forEach(function(event) {
-            [socket, relay].forEach(function(from) {
-                from.on(event, function(info) {
-                    that.log.trace('%sed %s; emit %s',
-                                   event, from.constructor.name, event);
-                    that.emit(event, info);
-                });
-            });
-        });
+        this.onErrorOrTimeout(relay);
+        var socket = new Net.Socket();
+        this.onErrorOrTimeout(socket);
         socket.pipe(this.fromAGW);
         this.toAGW.pipe(socket);
-        if (!givenConnection) {
-            socket.connect(options);
-        }
+        socket.connect(this.options, function() {
+            that.toAGW.write({dataKind: 'G'}); // Get information about all ports
+        });
         this.socket = socket;
-        this.toAGW.write({dataKind: 'G'}); // Get information about all ports
     }
-    
-    /** May be called repeatedly with different call signs. */
+
     listen(options, callback) {
-        // this.log.trace('listen(%o)', options);
+        const that = this;
+        this.log.trace('listen(%o)', options);
+        if (!(options && options.myCallSigns && options.myCallSigns.length > 0)) {
+            throw new Error('options.myCallSigns is absent or empty.');
+        }
+        if (this.iAmListening) {
+            throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
+        }
+        var ports = options.ports;
+        if (ports == null) {
+            if (this.numberOfPorts == null) {
+                // Postpone this request until we know the numberOfPorts.
+                this.listenBuffer = options;
+                return;
+            } else if (this.numberOfPorts <= 0) {
+                this.emit('error', new Error('The TNC has no ports.'));
+                return;
+            }
+            ports = [];
+            for (var p = 0; p < this.numberOfPorts; ++p) {
+                ports.push(p);
+            }
+        }
+        this.iAmListening = true;
         if (callback) {
             this.on('listening', callback);
         }
-        var that = this;
-        if (options.ports == null) {
-            if (this.numberOfPorts == null) {
-                // Postpone this request until we know the numberOfPorts.
-                if (!this.listenBuffer) {
-                    this.listenBuffer = [];
-                }
-                this.listenBuffer.push(options);
-            } else {
-                for (var p = 0; p < this.numberOfPorts; ++p) {
-                    this.listen(mergeOptions(options, {ports: p}));
-                }
-            }
-        } else if (Array.isArray(options.ports)) {
-            options.ports.forEach(function(onePort) {
-                that.listen(mergeOptions(options, {ports: onePort}));
-            });
-        } else if (Array.isArray(options.myCallSigns)) {
+        ports.forEach(function(onePort) {
             options.myCallSigns.forEach(function(oneCall) {
-                that.listen(mergeOptions(options, {myCallSigns: oneCall}));
+                that.toAGW.write({
+                    dataKind: 'X', // Register
+                    port: onePort,
+                    callFrom: oneCall,
+                });
             });
-        } else {
-            this.toAGW.write({
-                port: options.ports,
-                dataKind: 'X', // Register
-                callFrom: options.myCallSigns,
+        });
+    }
+
+    onErrorOrTimeout(from) {
+        const that = this;
+        ['error', 'timeout'].forEach(function(event) {
+            from.on(event, function(info) {
+                that.log.trace('%sed %s; emit %s',
+                               event, from.constructor.name, event);
+                that.emit(event, info);
             });
-        }
+        });
     }
 
     setNumberOfPorts(number) {
         this.numberOfPorts = number;
         if (this.listenBuffer) {
-            var queue = this.listenBuffer;
+            const options = this.listenBuffer;
             delete this.listenBuffer;
-            var that = this;
-            queue.forEach(function(options, port) {
-                that.listen(mergeOptions(options, {port: port}));
-            });
+            this.listen(options);
         }
     }
 
-    close(afterClose) {
-        this.socket.destroy();
-        if (afterClose) afterClose();
+    close(callback) {
+        this.log.trace('close()');
+        if (!this.iAmListening) {
+            if (callback) callback(new Error('Server is already closed'));
+        } else {
+            this.iAmListening = false;
+            this.emit('close');
+            if (callback) callback();
+        }
     }
 } // Server
 
