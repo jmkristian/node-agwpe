@@ -838,7 +838,8 @@ class Connection extends Stream.Duplex {
         this.log.trace('new %o', options);
         this.toAGW = toAGW;
         this.port = toAGW.port;
-        this.myCallSign = toAGW.myCall;
+        this.localAddress = toAGW.myCall;
+        this.remoteAddress = toAGW.theirCall;
         this.iAmClosed = true;
     }
 
@@ -886,7 +887,7 @@ class Connection extends Stream.Duplex {
 /** Similar to net.Server, but for AX.25 connections.
     Each 'connection' event provides a Duplex stream
     for exchanging data via one AX.25 connection.
-    The remote call sign is connection.theirCallSign.
+    The remote call sign is connection.remoteAddress.
     To disconnect, call connection.end(). The connection
     emits a 'close' event when AX.25 is disconnected.
 */
@@ -894,6 +895,7 @@ class Server extends EventEmitter {
 
     constructor(options, onConnect) {
         super();
+        if (!(options && options.port)) throw new Error('no options.port');
         const that = this;
         if (onConnect) this.on('connection', onConnect);
         this.options = options;
@@ -917,13 +919,14 @@ class Server extends EventEmitter {
     listen(options, callback) {
         const that = this;
         this.log.trace('listen(%o)', options);
-        if (!(options && options.myCallSigns && options.myCallSigns.length > 0)) {
-            throw new Error('options.myCallSigns is absent or empty.');
+        if (!(options && options.host && (!Array.isArray(options.host) || options.host.length > 0))) {
+            throw new Error('no options.host');
         }
-        if (this.iAmListening) {
+        if (this.listening) {
             throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
         }
-        var ports = options.ports;
+        const hosts = Array.isArray(options.host) ? options.host : [options.host];
+        var ports = options.port;
         if (ports == null) {
             if (this.numberOfPorts == null) {
                 // Postpone this request until we know the numberOfPorts.
@@ -937,17 +940,22 @@ class Server extends EventEmitter {
             for (var p = 0; p < this.numberOfPorts; ++p) {
                 ports.push(p);
             }
+        } else {
+            ports = Array.isArray(ports) ? ports : [ports];
+            for (var p = 0; p < ports.length; ++p) {
+                ports[p] = parseInt(ports[p] + '');
+            }
         }
-        this.iAmListening = true;
+        this.listening = true;
         if (callback) {
             this.on('listening', callback);
         }
         ports.forEach(function(onePort) {
-            options.myCallSigns.forEach(function(oneCall) {
+            hosts.forEach(function(oneHost) {
                 that.toAGW.write({
                     dataKind: 'X', // Register
                     port: onePort,
-                    callFrom: oneCall,
+                    callFrom: oneHost,
                 });
             });
         });
@@ -975,10 +983,10 @@ class Server extends EventEmitter {
 
     close(callback) {
         this.log.trace('close()');
-        if (!this.iAmListening) {
+        if (!this.listening) {
             if (callback) callback(new Error('Server is already closed'));
         } else {
-            this.iAmListening = false;
+            this.listening = false;
             this.emit('close');
             if (callback) callback();
         }
