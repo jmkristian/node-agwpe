@@ -10,7 +10,7 @@
     "bunyan": "^1.8.15"
   },
   "scripts": {
-    "test": "echo No test specified"
+    "test": "jasmine"
   },
   "repository": {
     "type": "git",
@@ -27,5 +27,7 @@
     "url": "https://github.com/jmkristian/node-agwpe/issues"
   },
   "homepage": "https://github.com/jmkristian/node-agwpe#readme",
-  "devDependencies": {}
+  "devDependencies": {
+    "jasmine": "^4.6.0"
+  }
 }

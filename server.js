@@ -209,6 +209,7 @@ class AGWReader extends Stream.Transform {
     }
 
     _transform(chunk, encoding, afterTransform) {
+        this.log.trace(`_transform ${chunk.length}`);
         if (encoding != 'buffer') {
             afterTransform(`AGWReader._transform encoding ${encoding}`);
             return;
@@ -236,11 +237,13 @@ class AGWReader extends Stream.Transform {
         }
         while(true) {
             if (this.headerLength < HeaderLength) {
+                this.log.trace('wait for header');
                 break; // Wait for more header.
             }
             var dataLength = this.header.readUInt32LE(28);
             var bufferLength = this.buffer ? this.buffer.length : 0;
             if (bufferLength < dataLength) {
+                this.log.trace('wait for data');
                 break; // Wait for more data.
             }
             // Produce a result:
@@ -396,6 +399,7 @@ class PortRouter extends Router {
     }
 
     onFrameFromAGW(frame, client) {
+        this.log.trace('onFrameFromAGW %o', frame);
         switch(frame.dataKind) {
         case 'G': // available ports
             var parts = frame.data.toString('ascii').split(';');
@@ -407,7 +411,7 @@ class PortRouter extends Router {
             break;
         case 'X': // registered myCall
             if (frame.data && frame.data.length > 0 && frame.data[0] == 1) {
-                this.server.emit('listening', {port: frame.port, myCallSign: frame.callFrom});
+                this.server.emit('listening', {localPort: frame.port, localAddress: frame.callFrom});
             } else {
                 this.server.emit('error', 'listen failed: ' + getFrameSummary(frame));
             }
@@ -901,19 +905,12 @@ class Server extends EventEmitter {
         this.options = options;
         this.log = getLogger(options, this);
         this.numberOfPorts = null; // until notified otherwise
-        this.fromAGW = new AGWReader(this.options);
-        this.toAGW = new AGWWriter(this.options);
+        this.fromAGW = new AGWReader(options);
+// this.fromAGW.write(toFrame({dataKind: '-', data: 'sample write'}));
+        this.toAGW = new AGWWriter(options);
         var relay = new FrameRelay(this.fromAGW, options);
         var router = new PortRouter(this.toAGW, relay, options, this);
         this.onErrorOrTimeout(relay);
-        var socket = new Net.Socket();
-        this.onErrorOrTimeout(socket);
-        socket.pipe(this.fromAGW);
-        this.toAGW.pipe(socket);
-        socket.connect(this.options, function() {
-            that.toAGW.write({dataKind: 'G'}); // Get information about all ports
-        });
-        this.socket = socket;
     }
 
     listen(options, callback) {
@@ -946,6 +943,22 @@ class Server extends EventEmitter {
                 ports[p] = parseInt(ports[p] + '');
             }
         }
+        var socket = new (options.Socket || net.Socket)();
+        this.onErrorOrTimeout(socket);
+        socket.on('close', function() {
+            that.log.trace('socket close');
+            socket.unpipe(that.fromAGW);
+            toAGW.unpipe(that.socket);
+        });
+        socket.on('readable', function() {
+            that.log.trace('socket readable');
+        });
+        socket.pipe(this.fromAGW);
+        this.toAGW.pipe(socket);
+        this.socket = socket;
+        socket.connect(this.options, function() {
+            that.toAGW.write({dataKind: 'G'}); // Get information about all ports
+        });
         this.listening = true;
         if (callback) {
             this.on('listening', callback);
@@ -986,6 +999,10 @@ class Server extends EventEmitter {
         if (!this.listening) {
             if (callback) callback(new Error('Server is already closed'));
         } else {
+            if (this.socket) {
+                this.socket.destroy();
+                delete this.socket;
+            }
             this.listening = false;
             this.emit('close');
             if (callback) callback();
@@ -997,3 +1014,5 @@ exports.Reader = AGWReader;
 exports.Writer = AGWWriter;
 exports.Server = Server;
 exports.toDataSummary = getDataSummary;
+exports.toFrame = toFrame;
+exports.fromHeader = fromHeader;
