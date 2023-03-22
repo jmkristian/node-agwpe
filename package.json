@@ -10,7 +10,7 @@
     "bunyan": "^1.8.15"
   },
   "scripts": {
-    "test": "jasmine"
+    "test": "node ./checknode.js && jasmine"
   },
   "repository": {
     "type": "git",
