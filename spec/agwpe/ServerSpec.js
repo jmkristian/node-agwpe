@@ -303,6 +303,8 @@ describe('Server', function() {
             }, function() {
                 if (server.listening) {
                     setTimeout(resolve, 500);
+                    // The timeout isn't strictly neccessary, but
+                    // it makes the log output more interesting.
                 } else {
                     reject('!server.listening');
                 }
@@ -316,13 +318,16 @@ describe('Server', function() {
         const connectSpy = sandbox.spy(stubSocket.prototype, 'connect');
         const connected = new Promise(function(resolve, reject) {
             server.listen({host: ['N0CALL'], port: 1, Socket: stubSocket}, function() {
-                expect(connectSpy.calledOnce).toBeTruthy();
-                expect(connectSpy.getCall(0).args[0])
-                    .toEqual(jasmine.objectContaining({
-                        host: serverOptions.host,
-                        port: serverOptions.port,
-                    }));
-                resolve();
+                // Give the server some time to connect the socket.
+                setTimeout(function() {
+                    expect(connectSpy.calledOnce).toBeTruthy();
+                    expect(connectSpy.getCall(0).args[0])
+                        .toEqual(jasmine.objectContaining({
+                            host: serverOptions.host,
+                            port: serverOptions.port,
+                        }));
+                    resolve();
+                }, 500);
             });
         });
         return expectAsync(connected).toBeResolved();
@@ -337,6 +342,7 @@ describe('Server', function() {
                 resolve();
             });
             server.listen({host: 'N0CALL', port: 1, Socket: stubSocket}, function() {
+                // Give the server some time to connect the socket.
                 setTimeout(function() {
                     server.close();
                 }, 500);
