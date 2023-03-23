@@ -8,7 +8,7 @@ const util = require('util');
 const logStream = new Stream();
 const log = Bunyan.createLogger({
     name: 'ServerSpec',
-    level: Bunyan.TRACE,
+    level: Bunyan.DEBUG,
     streams: [{
         type: "raw",
         stream: logStream,
@@ -141,7 +141,7 @@ function exposePromise() {
     return result;
 }
 
-xdescribe('stubSocket', function() {
+describe('stubSocket', function() {
 
     let socket
 
@@ -252,7 +252,7 @@ describe('Server', function() {
         server.close();
         sandbox.restore();
     });
-/*
+
     it('should not close when closed', function() {
         server.close(function(err) {
             expect(err).toBeTruthy();
@@ -293,7 +293,7 @@ describe('Server', function() {
             code: 'ERR_SERVER_ALREADY_LISTEN',
         }));
     });
-*/
+
     it('should emit listening', function() {
         log.info('Server should emit listening');
         const listening = new Promise(function(resolve, reject) {
@@ -309,7 +309,7 @@ describe('Server', function() {
         });
         return expectAsync(listening).toBeResolved();
     });
-/*
+
     it('should connect to AGWPE TNC', function() {
         log.info('Server should connect to AGWPE TNC');
         const connectSpy = sandbox.spy(stubSocket.prototype, 'connect');
@@ -337,12 +337,11 @@ describe('Server', function() {
             });
             server.listen({host: 'N0CALL', port: 1, Socket: stubSocket}, function() {
                 setTimeout(function() {
-                    log.info('server.close()');
                     server.close();
                 }, 500);
             });
         });
         return expectAsync(closed).toBeResolved();
     });
-*/
+
 }); // Server
