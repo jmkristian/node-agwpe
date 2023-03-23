@@ -167,10 +167,10 @@ function toFrame(from, encoding) {
     frame.write(from.callFrom || '', 8, 'ascii');
     frame.write(from.callTo || '', 18, 'ascii');
     frame.writeUInt32LE(dataLength, 28);
+    frame.writeUInt32LE(from.user || 0, 32);
     if (dataLength) {
         data.copy(frame, HeaderLength);
     }
-    frame.writeUInt32LE(from.user || 0, 32);
     return frame;
 }
 
@@ -203,13 +203,20 @@ class AGWReader extends Stream.Transform {
             writableHighWaterMark: HeaderLength +
                 (options.frameLength || DefaultFrameLength), // bytes
         });
+        this.log = getLogger(options, this);
+        this.log.trace('new(%o)', options);
         this.header = Buffer.alloc(HeaderLength);
         this.headerLength = 0;
-        this.log = getLogger(options, this);
+        this.on('pipe', function(from) {
+            this.log.debug('pipe from %s', from.constructor.name);
+        });
+        this.on('unpipe', function(from) {
+            this.log.debug('unpipe from %s', from.constructor.name);
+        });
     }
 
     _transform(chunk, encoding, afterTransform) {
-        this.log.trace(`_transform ${chunk.length}`);
+        this.log.trace('_transform %d', chunk.length);
         if (encoding != 'buffer') {
             afterTransform(`AGWReader._transform encoding ${encoding}`);
             return;
@@ -901,20 +908,19 @@ class Server extends EventEmitter {
         super();
         if (!(options && options.port)) throw new Error('no options.port');
         const that = this;
-        if (onConnect) this.on('connection', onConnect);
-        this.options = options;
         this.log = getLogger(options, this);
+        this.log.debug('new(%o, %s)', options, typeof onConnect);
+        this.options = options;
         this.numberOfPorts = null; // until notified otherwise
         this.fromAGW = new AGWReader(options);
-// this.fromAGW.write(toFrame({dataKind: '-', data: 'sample write'}));
         this.toAGW = new AGWWriter(options);
         var relay = new FrameRelay(this.fromAGW, options);
         var router = new PortRouter(this.toAGW, relay, options, this);
         this.onErrorOrTimeout(relay);
+        if (onConnect) this.on('connection', onConnect);
     }
 
     listen(options, callback) {
-        const that = this;
         this.log.trace('listen(%o)', options);
         if (!(options && options.host && (!Array.isArray(options.host) || options.host.length > 0))) {
             throw new Error('no options.host');
@@ -922,12 +928,18 @@ class Server extends EventEmitter {
         if (this.listening) {
             throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
         }
+        this.listening = true;
+        this._listen(options, callback);
+    }
+
+    _listen(options, callback) {
+        const that = this;
         const hosts = Array.isArray(options.host) ? options.host : [options.host];
         var ports = options.port;
         if (ports == null) {
             if (this.numberOfPorts == null) {
                 // Postpone this request until we know the numberOfPorts.
-                this.listenBuffer = options;
+                this.listenBuffer = [options, callback];
                 return;
             } else if (this.numberOfPorts <= 0) {
                 this.emit('error', new Error('The TNC has no ports.'));
@@ -948,30 +960,33 @@ class Server extends EventEmitter {
         socket.on('close', function() {
             that.log.trace('socket close');
             socket.unpipe(that.fromAGW);
-            toAGW.unpipe(that.socket);
+            that.toAGW.unpipe(that.socket);
         });
         socket.on('readable', function() {
             that.log.trace('socket readable');
         });
-        socket.pipe(this.fromAGW);
-        this.toAGW.pipe(socket);
-        this.socket = socket;
         socket.connect(this.options, function() {
+            that.socket = socket;
+            that.socket.pipe(that.fromAGW);
+            that.toAGW.pipe(that.socket);
+            that._address = {host: hosts, port: ports};
+            that.emit('listening');
+            if (callback) callback();
             that.toAGW.write({dataKind: 'G'}); // Get information about all ports
-        });
-        this.listening = true;
-        if (callback) {
-            this.on('listening', callback);
-        }
-        ports.forEach(function(onePort) {
-            hosts.forEach(function(oneHost) {
-                that.toAGW.write({
-                    dataKind: 'X', // Register
-                    port: onePort,
-                    callFrom: oneHost,
+            ports.forEach(function(onePort) {
+                hosts.forEach(function(oneHost) {
+                    that.toAGW.write({
+                        dataKind: 'X', // Register
+                        port: onePort,
+                        callFrom: oneHost,
+                    });
                 });
             });
         });
+    }
+
+    address() {
+        return this._address;
     }
 
     onErrorOrTimeout(from) {
@@ -988,9 +1003,10 @@ class Server extends EventEmitter {
     setNumberOfPorts(number) {
         this.numberOfPorts = number;
         if (this.listenBuffer) {
-            const options = this.listenBuffer;
+            const options = this.listenBuffer[0];
+            const callback = this.listenBuffer[1];
             delete this.listenBuffer;
-            this.listen(options);
+            this._listen(options, callback);
         }
     }
 
@@ -1004,6 +1020,7 @@ class Server extends EventEmitter {
                 delete this.socket;
             }
             this.listening = false;
+            delete this._address;
             this.emit('close');
             if (callback) callback();
         }
@@ -1013,6 +1030,9 @@ class Server extends EventEmitter {
 exports.Reader = AGWReader;
 exports.Writer = AGWWriter;
 exports.Server = Server;
-exports.toDataSummary = getDataSummary;
-exports.toFrame = toFrame;
+
+// The following are used for testing, only.
 exports.fromHeader = fromHeader;
+exports.getDataSummary = getDataSummary;
+exports.toFrame = toFrame;
+exports.HeaderLength = HeaderLength;

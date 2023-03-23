@@ -1,12 +1,14 @@
+const AGWPE = require('../../server.js');
 const Bunyan = require('bunyan');
 const Net = require('net');
+const sinon = require('sinon');
 const Stream = require('stream');
-const AGWPE = require('../../server.js');
+const util = require('util');
 
 const logStream = new Stream();
-const logger = Bunyan.createLogger({
+const log = Bunyan.createLogger({
     name: 'ServerSpec',
-    level: Bunyan.TRACE,
+    level: Bunyan.INFO,
     streams: [{
         type: "raw",
         stream: logStream,
@@ -18,176 +20,241 @@ logStream.write = function(item) {
     c = c ? c + ' ' : '';
     console.log(`${item.level}: ${c}${item.msg}`);
 }
+const LogNothing = Bunyan.createLogger({
+    name: 'ServerSpec',
+    level: Bunyan.FATAL + 100,
+});
 
-// const realSocket = Net.Socket;
-var aSocket = null;
+const GResponseData = '1;Port1 stub';
 
-class mockSocket extends Stream.Duplex {
-    constructor(options) {
+let aSocket = null;
+
+class Responder extends Stream.Writable {
+    constructor(target, log) {
         super({
-//            readableObjectMode: false,
-//            writableObjectMode: false,
+            objectMode: true, // each object is an AGWPE frame
         });
-        logger.debug('new mockSocket(%o)', options);
-        // this.receive_buffer = [];
-        // spyOn(this, 'on');
-        // spyOn(this, 'pipe');
-        // spyOn(this, 'connect'); // doesn't work
-        // spyOn(this, 'destroy'); // doesn't work
-        // spyOn(this, '_write'); // doesn't work
-        aSocket = this; 
+        this.target = target;
+        this.log = log || LogNothing;
     }
-    connect(options, callback) {
-        logger.debug(`connect(%s, %s)`, options, typeof callback);
-        if (callback) callback('not really an error');
-    }
-    _destroy(err, callback) {
-        this.emit('close');
-        if (callback) callback(err);
-    }
-    _read(size) {
-        logger.trace(`mockSocket._read(${size})`);
-        this.receiveBufferIsFull = false;
-/*
-        while (this.receive_buffer.length) {
-            var response = this.receive_buffer.shift();
-            logger.debug('push%o', response);
-            if (this.push(AGWPE.toFrame(response))) break;
-        }
-*/
-    }
-    _write(data, encoding, callback) {
-        const request = AGWPE.fromHeader(data);
-        logger.debug(`_write(%o, %s, %s)`, request, encoding, typeof callback);
-        var response = null;
-        switch(request.dataKind) {
-        case 'G':
-            response = Object.assign({}, request, {
-                dataKind: 'G',
-                data: '0;Port0 mockSocket port',
-            });
-            break;
-        case 'X':
-            response = Object.assign({}, request, {
-                dataKind: 'X',
-                data: '\x01', // success
-            });
-            break;
-        default:
-        }
-        if (response) {
-            if (this.receiveBufferIsFull) {
-                logger.warn('lost %o', response);
-            } else {
-                logger.debug('respond%o', response);
-                this.push(AGWPE.toFrame(response));
-                // this.receive_buffer.push(response);
-                this.emit('readable');
+    _write(request, encoding, callback) {
+        try {
+            this.log.trace(`Responder._write(%o, %s, %s)`, request, encoding, typeof callback);
+            var response = null;
+            switch(request.dataKind) {
+            case 'G':
+                response = Object.assign({}, request, {
+                    dataKind: 'G',
+                    data: GResponseData,
+                });
+                break;
+            case 'X':
+                response = Object.assign({}, request, {
+                    dataKind: 'X',
+                    data: '\x01', // success
+                });
+                break;
+            default:
             }
+            if (response) {
+                if (response.data && !(typeof response.data) == 'string') {
+                    response.data = response.data.toString(encoding);
+                }
+                this.target.toReader(response);
+            }
+            if (callback) callback();
+        } catch(err) {
+            if (callback) callback(err);
         }
-        if (callback) callback();
     }
 }
 
-describe('mockSocket', function() {
+class stubReader extends AGWPE.Reader {
+    constructor(options) {
+        super(options);
+    }
+}
 
-    let subject
+class stubSocket extends Stream.Duplex {
+    constructor(options) {
+        super({
+            readable: true, // default
+            writable: true, // default
+        });
+        this.log = options ? (options.logger || LogNothing) : log;
+        this.log.debug('stubSocket new(%o)', options);
+        this._read_buffer = [];
+        this._pushable = false;
+        this.reader = new stubReader({logger: this.log});
+        this.responder = new Responder(this, this.log);
+        this.reader.pipe(this.responder);
+        this.on('pipe', function(from) {
+            this.log.debug('stubSocket pipe from %s', from.constructor.name);
+        });
+        this.on('unpipe', function(from) {
+            this.log.debug('stubSocket unpipe from %s', from.constructor.name);
+        });
+        aSocket = this;
+    }
+    connect(options, callback) {
+        this.log.debug(`stubSocket.connect(%s, %s)`, options, typeof callback);
+        if (callback) callback();
+    }
+    _destroy(err, callback) {
+        this.emit('close');
+        if (callback) callback();
+    }
+    _write(data, encoding, callback) {
+        this.reader.write(data, encoding, callback);
+    }
+    _read(size) {
+        this.log.trace(`stubSocket._read(%d)`, size);
+        this._pushable = true;
+        setTimeout(function(that) {
+            that.pushMore();
+        }, 10, this);
+    }
+    pushMore() {
+        while (this._pushable && this._read_buffer.length > 0) {
+            const response = this._read_buffer.shift();
+            const frame = AGWPE.toFrame(response);
+            this.log.trace('stubSocket.push %d %o', frame.length, response);
+            this._pushable = this.push(frame);
+            // this.emit('readable');
+        }
+    }
+    toReader(response) {
+        this.log.trace('stubSocket.toReader %o', response);
+        this._read_buffer.push(response);
+        this.pushMore();
+    }
+}
+
+function exposePromise() {
+    const result = {};
+    result.promise = new Promise(function(resolve, reject) {
+        result.resolve = resolve;
+        result.reject = reject;
+    });
+    return result;
+}
+
+describe('stubSocket', function() {
+
+    let socket
 
     beforeEach(function() {
-        subject = new mockSocket();
+        socket = new stubSocket({logger: log});
     });
 
     afterEach(function() {
-        try {
-            subject.close();
-        } catch(err) {
-            logger.warn(err, 'mockSocket.close');
-        }
-    });
-
-    it('should read a response', function() {
-        var resolveErr;
-        const err = new Promise(function(resolve, reject) {
-            resolveErr = resolve;
-        });
-        subject.write(AGWPE.toFrame({
-            dataKind: 'X',
-            port: 12,
-        }), null, function(err) {
-            resolveErr(err ? Promise.reject(err) : undefined);
-        });
-        var actual = subject.read();
-        expect(actual).toBeInstanceOf(Buffer);
-        expect(AGWPE.fromHeader(actual)).toEqual(jasmine.objectContaining({
-            dataKind: 'X',
-            port: 12,
-        }));
-        return expectAsync(err).toBeResolved();
+        socket.destroy();
     });
 
     it('should pipe a response', function() {
-        var resolveActual;
-        const actual = new Promise(function(resolve, reject) {
-            resolveActual = resolve;
-        });
-        var resolveErr;
-        const err = new Promise(function(resolve, reject) {
-            resolveErr = resolve;
-        });
-        subject.write(AGWPE.toFrame({
-            dataKind: 'X',
-            port: 21,
-        }), null, function(err) {
-            resolveErr(err ? Promise.reject(err) : undefined);
-        });
-        subject.pipe(new Stream.Writable({
-            write: function(chunk, encoding, callback) {
-                if (!Buffer.isBuffer(chunk)) {
-                    resolveActual(Promise.reject('chunk is a ') + (typeof chunk));
-                } else {
-                    var actual = AGWPE.fromHeader(chunk);
-                    if (actual.dataKind == 'X' && actual.port == 21) {
-                        resolveActual();
+        log.info('stubSocket should pipe a response');
+        const request = exposePromise();
+        const response = new Promise(function(resolve, reject) {
+            const reader = new AGWPE.Reader({logger: log});
+            reader.pipe(new Stream.Writable({
+                objectMode: true,
+                write: function(actual, encoding, callback) {
+                    log.debug('received %o', actual);
+                    if (actual.dataKind == 'X' && actual.port == 21 && actual.data == '\x01') {
+                        resolve();
                     } else {
-                        resolveActual(Promise.reject(actual));
+                        reject(actual);
+                    }
+                },
+            }));
+            socket.connect(null, function() {
+                socket.pipe(reader);
+                // send the request:
+                socket.write(AGWPE.toFrame({dataKind: 'X', port: 21}), null, function(err) {
+                    if (err) request.reject(err);
+                    else request.resolve();
+                });
+            });
+        });
+        return expectAsync(Promise.all([request.promise, response])).toBeResolved();
+    });
+
+    it('should pipe 2 responses', function() {
+        log.info('stubSocket should pipe 2 responses');
+        // Send some requests:
+        const requests = [
+            {dataKind: 'G'},
+            {dataKind: 'X', port: 1, callFrom: 'N0CALL'},
+        ];
+        // Expect some responses:
+        const expected = [
+            [exposePromise(), {dataKind: 'G', data: GResponseData}],
+            [exposePromise(), {dataKind: 'X', port: 1, data: '\x01'}],
+        ];
+        const results = expected.map(e => e[0].promise);
+        var expectIndex = 0;
+        const reader = new AGWPE.Reader({logger: log});
+        reader.pipe(new Stream.Writable({
+            objectMode: true,
+            write: function(actual, encoding, callback) {
+                log.debug('response %o', actual);
+                var failure = undefined;
+                const item = expected[expectIndex++];
+                const result = item[0];
+                const expect = item[1];
+                for (key in expect) {
+                    if (actual[key] != expect[key]) {
+                        failure = actual;
+                        break;
                     }
                 }
+                if (failure) {
+                    result.reject(failure);
+                } else {
+                    result.resolve();
+                }
+                if (callback) callback();
             },
         }));
-        return expectAsync(Promise.all([err, actual])).toBeResolved();
+        socket.connect(null, function() {
+            socket.pipe(reader);
+            // Send the requests:
+            var requestIndex = 0;
+            new Stream.Readable({
+                read: function(size) {
+                    if (requestIndex < requests.length) {
+                        const request = requests[requestIndex++];
+                        log.debug('request %o', request);
+                        this.push(AGWPE.toFrame(request));
+                    }
+                },
+            }).pipe(socket);
+        });
+        return expectAsync(Promise.all(results)).toBeResolved();
     });
 
-}); // mockSocket
-/*
+}); // stubSocket
+
 describe('Server', function() {
 
+    const sandbox = sinon.createSandbox();
     let server, serverOptions
-
-    beforeAll(function() {
-//        Net.Socket = mockSocket;
-    });
-
-    afterAll(function() {
-//        Net.Socket = realSocket;
-    });
 
     beforeEach(function() {
         serverOptions = {
             host: Math.floor(Math.random() * (1 << 20)).toString(36),
             port: Math.floor(Math.random() * ((1 << 16) - 1)) + 1,
-            logger: logger,
+            logger: log,
         };
         server = new AGWPE.Server(serverOptions);
         server.on('error', function(err) {
-            logger.error(err);
+            log.error(err);
         });
     });
 
     afterEach(function() {
-        try {
-            server.close();
-        } catch(err) {
-        }
+        server.close();
+        sandbox.restore();
     });
 
     it('should not close when closed', function() {
@@ -197,7 +264,6 @@ describe('Server', function() {
     });
 
     it('should require TNC port', function() {
-        new AGWPE.Server({port: serverOptions.port});
         try {
             new AGWPE.Server();
             fail('no options');
@@ -218,46 +284,11 @@ describe('Server', function() {
         }
     });
 
-    it('should emit listening', function() {
-        var listening = false;
-        server.listen({host: 'N0CALL', port: 1, Socket: mockSocket}, function() {
-            listening = true;
-        });
-        expect(listening).toBe(true);
-        expect(server.listening).toBe(true);
-    });
-
-    it('should connect to AGWPE TNC', function() {
-        spyOn(mockSocket.prototype, 'connect');
-        server.listen({host: ['N0CALL']});
-        expect(aSocket.on).toHaveBeenCalled();
-        expect(aSocket.pipe).toHaveBeenCalledTimes(1);
-        expect(aSocket.connect).toHaveBeenCalledWith(
-            jasmine.objectContaining({
-                host: serverOptions.host,
-                port: serverOptions.port,
-            }),
-            jasmine.any(Function)
-        );
-    });
-
-    it('should disconnect from AGWPE TNC', function() {
-        var closed = false;
-        spyOn(mockSocket.prototype, 'destroy');
-        server.listen({host: 'N0CALL'});
-        server.on('close', function(err) {
-            closed = true;
-        });
-        server.close();
-        expect(closed).toBe(true);
-        expect(aSocket.destroy).toHaveBeenCalled();
-    });
-
     it('should not listen when listening', function() {
         var actual = null;
-        server.listen({host: ['N0CALL'], port: 2});
+        server.listen({host: ['N0CALL'], Socket: stubSocket});
         try {
-            server.listen({host: ['N0CALL'], port: 3});
+            server.listen({host: ['N0CALL'], port: 3, Socket: stubSocket});
             fail();
         } catch(err) {
             actual = err;
@@ -267,5 +298,55 @@ describe('Server', function() {
         }));
     });
 
+    it('should emit listening', function() {
+        log.info('Server should emit listening');
+        const listening = new Promise(function(resolve, reject) {
+            server.listen({
+                host: 'N0CALL', port: 1, Socket: stubSocket,
+            }, function() {
+                if (server.listening) {
+                    setTimeout(resolve, 500);
+                } else {
+                    reject('!server.listening');
+                }
+            });
+        });
+        return expectAsync(listening).toBeResolved();
+    });
+
+    it('should connect to AGWPE TNC', function() {
+        log.info('Server should connect to AGWPE TNC');
+        const connectSpy = sandbox.spy(stubSocket.prototype, 'connect');
+        const connected = new Promise(function(resolve, reject) {
+            server.listen({host: ['N0CALL'], port: 1, Socket: stubSocket}, function() {
+                expect(connectSpy.calledOnce).toBeTruthy();
+                expect(connectSpy.getCall(0).args[0])
+                    .toEqual(jasmine.objectContaining({
+                        host: serverOptions.host,
+                        port: serverOptions.port,
+                    }));
+                resolve();
+            });
+        });
+        return expectAsync(connected).toBeResolved();
+    });
+
+    it('should disconnect from AGWPE TNC', function() {
+        log.info('Server should disconnect from AGWPE TNC');
+        const destroySpy = sandbox.spy(stubSocket.prototype, 'destroy');
+        const closed = new Promise(function(resolve, reject) {
+            server.on('close', function(err) {
+                expect(destroySpy.calledOnce).toBeTruthy();
+                resolve();
+            });
+            server.listen({host: 'N0CALL', port: 1, Socket: stubSocket}, function() {
+                setTimeout(function() {
+                    log.info('server.close()');
+                    server.close();
+                }, 500);
+            });
+        });
+        return expectAsync(closed).toBeResolved();
+    });
+
 }); // Server
-*/

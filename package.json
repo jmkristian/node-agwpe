@@ -28,6 +28,7 @@
   },
   "homepage": "https://github.com/jmkristian/node-agwpe#readme",
   "devDependencies": {
-    "jasmine": "^4.6.0"
+    "jasmine": "^4.6.0",
+    "sinon": "^15.0.2"
   }
 }
