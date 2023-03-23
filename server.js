@@ -11,9 +11,6 @@ streams, like this:
    AGWReader AGWWriter
        |         ^
        v         |
-  FrameRelay     |
-       |         |
-       v         |
   PortRouter     |
           |      |
           v      |
@@ -55,7 +52,7 @@ const LogNothing = Bunyan.createLogger({
 
 function newError(message, code) {
     const err = new Error(message);
-    err.code = code;
+    if (code) err.code = code;
     return err;
 }
 
@@ -193,7 +190,7 @@ function fromHeader(buffer) {
 const EmptyBuffer = Buffer.alloc(0);
 
 /** Transform binary AGWPE frames to objects. */
-class AGWReader extends Stream.Transform {
+class AGWReader extends Stream.Writable {
 
     constructor(options) {
         super({
@@ -215,65 +212,68 @@ class AGWReader extends Stream.Transform {
         });
     }
 
-    _transform(chunk, encoding, afterTransform) {
-        this.log.trace('_transform %d', chunk.length);
-        if (encoding != 'buffer') {
-            afterTransform(`AGWReader._transform encoding ${encoding}`);
-            return;
+    _write(chunk, encoding, afterTransform) {
+        try {
+            this.log.trace('_write %d', chunk.length);
+            if (encoding != 'buffer') {
+                throw newError(`AGWReader._write encoding ${encoding}`, 'ERR_INVALID_ARG_VALUE');
+            }
+            if (!Buffer.isBuffer(chunk)) {
+                throw newError(`AGWReader._write chunk isn't a Buffer`, 'ERR_INVALID_ARG_TYPE');
+            }
+            if (this.data) {
+                // We have part of the data. Append the new chunk to it.
+                var newBuffer = Buffer.alloc(this.data.length + chunk.length);
+                this.data.copy(newBuffer, 0);
+                chunk.copy(newBuffer, this.data.length);
+                this.data = newBuffer;
+            } else {
+                // Start a new frame.
+                var headerSlice = Math.min(HeaderLength - this.headerLength, chunk.length);
+                if (headerSlice > 0) {
+                    chunk.copy(this.header, this.headerLength, 0, headerSlice);
+                    this.headerLength += headerSlice;
+                }
+                if (headerSlice < chunk.length) {
+                    this.data = copyBuffer(chunk, headerSlice);
+                }
+            }
+            while(true) {
+                if (this.headerLength < HeaderLength) {
+                    this.log.trace('wait for header');
+                    break;
+                }
+                var dataLength = this.header.readUInt32LE(28);
+                var bufferLength = this.data ? this.data.length : 0;
+                if (bufferLength < dataLength) {
+                    this.log.trace('wait for data');
+                    break;
+                }
+                // Construct a result:
+                var result = fromHeader(this.header);
+                result.data = (dataLength <= 0) ? EmptyBuffer
+                    : (dataLength == this.data.length)
+                    ? this.data
+                    : copyBuffer(this.data, 0, dataLength);
+                // Shift the remaining data into this.header and this.data:
+                this.headerLength = Math.min(HeaderLength, bufferLength - dataLength);
+                if (this.headerLength > 0) {
+                    this.data.copy(this.header, 0, dataLength, dataLength + this.headerLength);
+                }
+                var newBufferLength = bufferLength - (dataLength + this.headerLength);
+                this.data = (newBufferLength <= 0) ? null
+                    : copyBuffer(this.data, dataLength + this.headerLength);
+                if (this.log.debug()) {
+                    this.log.debug('< %s', getFrameSummary(result));
+                }
+                this.emitFrameFromAGW(result);
+            }
+            afterTransform();
+        } catch(err) {
+            this.emit('error', err);
+            afterTransform(err);
         }
-        if (!Buffer.isBuffer(chunk)) {
-            afterTransform(`AGWReader._transform chunk isn't a Buffer`);
-            return;
-        }
-        if (this.buffer) {
-            // this.header is complete, but we need more data.
-            var newBuffer = Buffer.alloc(this.buffer.length + chunk.length);
-            this.buffer.copy(newBuffer, 0);
-            chunk.copy(newBuffer, this.buffer.length);
-            this.buffer = newBuffer;
-        } else {
-            // We need more header.
-            var headerSlice = Math.min(HeaderLength - this.headerLength, chunk.length);
-            if (headerSlice > 0) {
-                chunk.copy(this.header, this.headerLength, 0, headerSlice);
-                this.headerLength += headerSlice;
-            }
-            if (headerSlice < chunk.length) {
-                this.buffer = copyBuffer(chunk, headerSlice);
-            }
-        }
-        while(true) {
-            if (this.headerLength < HeaderLength) {
-                this.log.trace('wait for header');
-                break; // Wait for more header.
-            }
-            var dataLength = this.header.readUInt32LE(28);
-            var bufferLength = this.buffer ? this.buffer.length : 0;
-            if (bufferLength < dataLength) {
-                this.log.trace('wait for data');
-                break; // Wait for more data.
-            }
-            // Produce a result:
-            var result = fromHeader(this.header);
-            result.data = (dataLength <= 0) ? EmptyBuffer
-                : (dataLength == this.buffer.length)
-                ? this.buffer
-                : copyBuffer(this.buffer, 0, dataLength);
-            // Shift the remaining data into this.header and this.buffer:
-            this.headerLength = Math.min(HeaderLength, bufferLength - dataLength);
-            if (this.headerLength > 0) {
-                this.buffer.copy(this.header, 0, dataLength, dataLength + this.headerLength);
-            }
-            var newBufferLength = bufferLength - (dataLength + this.headerLength);
-            this.buffer = (newBufferLength <= 0) ? null
-                : copyBuffer(this.buffer, dataLength + this.headerLength);
-            if (this.log.debug()) {
-                this.log.debug('< %s', getFrameSummary(result));
-            }
-            this.push(result);
-        }
-        afterTransform();
-    } // _transform
+    } // _write
 } // AGWReader
 
 /** Transform objects to binary AGWPE frames. */
@@ -303,24 +303,6 @@ class AGWWriter extends Stream.Transform {
         }
     }
 } // AGWWriter
-
-/** Receives frames from a stream and passes them to a function.
-    The function is injected by the object that wants the frames.
-*/
-class FrameRelay extends EventEmitter {
-
-    constructor(fromAGW) {
-        super();
-        var that = this;
-        fromAGW.on('data', function onFrameFromAGW(frame) {
-            try {
-                that.emitFrameFromAGW(frame);
-            } catch(err) {
-                that.emit('error', err);
-            }
-        });
-    }
-}
 
 /** Creates a client object to handle each connection to an AGW port
     or a remote AX.25 station. Also, passes frames received via each
@@ -389,10 +371,6 @@ class PortRouter extends Router {
 
     constructor(toAGW, fromAGW, options, server) {
         super(toAGW, fromAGW, options, server);
-        var that = this;
-        fromAGW.on('error', function(err) {
-            that.server.emit('error', err);
-        });
     }
 
     getKey(frame) {
@@ -593,7 +571,7 @@ class Throttle extends Stream.Transform {
         if (this.inFlight >= MaxFramesInFlight) {
             // Don't send it now.
             if (this.buffer) {
-                var err = new Error('already have a buffer');
+                var err = newError('already have a buffer');
                 this.log.error(err);
                 this.emit('error', err);
                 throw err;
@@ -736,7 +714,8 @@ class DataToFrames extends Stream.Transform {
     _transform(data, encoding, afterTransform) {
         try {
             if (!Buffer.isBuffer(data)) {
-                afterTransform(new Error(`DataToFrames._transform ${typeof data}`));
+                afterTransform(newError(`DataToFrames._transform ${typeof data}`,
+                                        'ERR_INVALID_ARG_TYPE'));
                 return;
             }
             if (this.log.trace()) {
@@ -873,8 +852,8 @@ class Connection extends Stream.Duplex {
                 if (!this.receiveBufferIsFull) {
                     this.receiveBufferIsFull = !this.push(frame.data);
                 } else {
-                    this.emit('error', new Error('receive buffer overflow: '
-                                                 + getDataSummary(frame.data)));
+                    this.emit('error', newError('receive buffer overflow: '
+                                                + getDataSummary(frame.data)));
                 }
             }
             break;
@@ -906,24 +885,25 @@ class Server extends EventEmitter {
 
     constructor(options, onConnect) {
         super();
-        if (!(options && options.port)) throw new Error('no options.port');
+        if (!(options && options.port)) {
+            throw newError('no options.port', 'ERR_INVALID_ARG_VALUE');
+        }
         const that = this;
         this.log = getLogger(options, this);
         this.log.debug('new(%o, %s)', options, typeof onConnect);
         this.options = options;
         this.numberOfPorts = null; // until notified otherwise
         this.fromAGW = new AGWReader(options);
+        this.onErrorOrTimeout(this.fromAGW);
         this.toAGW = new AGWWriter(options);
-        var relay = new FrameRelay(this.fromAGW, options);
-        var router = new PortRouter(this.toAGW, relay, options, this);
-        this.onErrorOrTimeout(relay);
+        new PortRouter(this.toAGW, this.fromAGW, options, this);
         if (onConnect) this.on('connection', onConnect);
     }
 
     listen(options, callback) {
         this.log.trace('listen(%o)', options);
         if (!(options && options.host && (!Array.isArray(options.host) || options.host.length > 0))) {
-            throw new Error('no options.host');
+            throw newError('no options.host');
         }
         if (this.listening) {
             throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
@@ -942,7 +922,7 @@ class Server extends EventEmitter {
                 this.listenBuffer = [options, callback];
                 return;
             } else if (this.numberOfPorts <= 0) {
-                this.emit('error', new Error('The TNC has no ports.'));
+                this.emit('error', newError('The TNC has no ports.'));
                 return;
             }
             ports = [];
@@ -961,9 +941,6 @@ class Server extends EventEmitter {
             that.log.trace('socket close');
             socket.unpipe(that.fromAGW);
             that.toAGW.unpipe(that.socket);
-        });
-        socket.on('readable', function() {
-            that.log.trace('socket readable');
         });
         socket.connect(this.options, function() {
             that.socket = socket;
@@ -1013,7 +990,7 @@ class Server extends EventEmitter {
     close(callback) {
         this.log.trace('close()');
         if (!this.listening) {
-            if (callback) callback(new Error('Server is already closed'));
+            if (callback) callback(newError('Server is already closed'));
         } else {
             if (this.socket) {
                 this.socket.destroy();
