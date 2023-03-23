@@ -82,25 +82,26 @@ class stubSocket extends Stream.Duplex {
             writable: true, // default
         });
         const that = this;
-        this.log = options ? (options.logger || LogNothing) : log;
-        this.log.debug('stubSocket new(%o)', options);
+        this.log = (options ? (options.logger || LogNothing) : log)
+            .child({'class': 'stubSocket'});
+        this.log.debug('new(%o)', options);
         this._read_buffer = [];
         this._pushable = false;
-        this.reader = new stubReader({logger: this.log});
+        this.reader = new stubReader({logger: options && options.logger});
         this.responder = new Responder(this, this.log);
         this.reader.emitFrameFromAGW = function(frame) {
             that.responder.write(frame);
         };
         this.on('pipe', function(from) {
-            that.log.debug('stubSocket pipe from %s', from.constructor.name);
+            that.log.debug('pipe from %s', from.constructor.name);
         });
         this.on('unpipe', function(from) {
-            that.log.debug('stubSocket unpipe from %s', from.constructor.name);
+            that.log.debug('unpipe from %s', from.constructor.name);
         });
         aSocket = this;
     }
     connect(options, callback) {
-        this.log.debug(`stubSocket.connect(%s, %s)`, options, typeof callback);
+        this.log.debug(`connect(%s, %s)`, options, typeof callback);
         if (callback) callback();
     }
     _destroy(err, callback) {
@@ -111,7 +112,7 @@ class stubSocket extends Stream.Duplex {
         this.reader.write(data, encoding, callback);
     }
     _read(size) {
-        this.log.trace(`stubSocket._read(%d)`, size);
+        this.log.trace(`_read(%d)`, size);
         this._pushable = true;
         setTimeout(function(that) {
             that.pushMore();
@@ -121,12 +122,12 @@ class stubSocket extends Stream.Duplex {
         while (this._pushable && this._read_buffer.length > 0) {
             const response = this._read_buffer.shift();
             const frame = AGWPE.toFrame(response);
-            this.log.trace('stubSocket.push %d %o', frame.length, response);
+            this.log.trace('push %d %o', frame.length, response);
             this._pushable = this.push(frame);
         }
     }
     toReader(response) {
-        this.log.trace('stubSocket.toReader %o', response);
+        this.log.trace('toReader %o', response);
         this._read_buffer.push(response);
         this.pushMore();
     }
