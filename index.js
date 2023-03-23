@@ -6,4 +6,3 @@ const server = require('./server.js');
 exports.Reader = server.Reader;
 exports.Writer = server.Writer;
 exports.Server = server.Server;
-exports.toDataSummary = server.toDataSummary;
