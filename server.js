@@ -393,13 +393,11 @@ class PortRouter extends Router {
         switch(frame.dataKind) {
         case 'G': // available ports
             try {
-                var parts = frame.data.toString('ascii').split(';');
-                var ports = [];
-                for (var p = 1; p < parts.length; ++p) {
-                    var found = (/^port(\d+)/i).exec(parts[p]);
-                    if (found) {
-                        ports.push(parseInt(found[1]));
-                    }
+                const parts = frame.data.toString('ascii').split(';');
+                const ports = [];
+                const numberOfPorts = parseInt(parts[0]);
+                for (var p = 0; p < numberOfPorts; ++p) {
+                    ports.push(p);
                 }
                 ports.forEach(function(port) {
                     that.toAGW.write({dataKind: 'g', port: port});

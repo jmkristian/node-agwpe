@@ -114,7 +114,7 @@ function happySocket(options, spec) {
             });
         case 'X':
             return Object.assign({}, request, {
-                data: ([1, 2].includes(request.port)
+                data: ([0, 1].includes(request.port)
                        ? '\x01' // success
                        : '\x00' // failure
                       ),
@@ -211,12 +211,12 @@ describe('mockSocket', function() {
         // Send some requests:
         const requests = [
             {dataKind: 'G'},
-            {dataKind: 'X', port: 1, callFrom: 'N0CALL'},
+            {dataKind: 'X', port: 0, callFrom: 'N0CALL'},
         ];
         // Expect some responses:
         const expected = [
             [exposePromise(), {dataKind: 'G', data: HappyPorts}],
-            [exposePromise(), {dataKind: 'X', port: 1, data: '\x01'}],
+            [exposePromise(), {dataKind: 'X', port: 0, data: '\x01'}],
         ];
         const results = expected.map(e => e[0].promise);
         var expectIndex = 0;
@@ -318,7 +318,7 @@ describe('Server', function() {
     it('should callback from listening', function() {
         log.debug('Server should callback from listening');
         const listening = new Promise(function(resolve, reject) {
-            server.listen({host: 'N0CALL', port: 1, newSocket: newSocket}, function() {
+            server.listen({host: 'N0CALL', port: 0, newSocket: newSocket}, function() {
                 if (server.listening) {
                     setTimeout(resolve, 500);
                     // The timeout isn't really neccessary, but
@@ -355,7 +355,7 @@ describe('Server', function() {
                     log.debug('server.address() %o', serverAddress);
                     expect(serverAddress).toEqual(jasmine.objectContaining({
                         host: ['N0CALL'],
-                        port: [1, 2],
+                        port: [0, 1],
                     }));
                     resolve();
                 } catch(err) {
