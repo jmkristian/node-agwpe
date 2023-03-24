@@ -5,8 +5,9 @@ const sinon = require('sinon');
 const Stream = require('stream');
 const util = require('util');
 
-const HappyPorts = '2;Port1 stub;Port2 stub';
 const ECONNREFUSED = 'ECONNREFUSED';
+const ETIMEDOUT = 'ETIMEDOUT';
+const HappyPorts = '2;Port1 stub;Port2 stub';
 
 const logStream = new Stream();
 const log = Bunyan.createLogger({
@@ -145,6 +146,14 @@ function noTNC(options, spec) {
     const socket = happySocket(options, spec);
     socket.connect = function(that, options, callback) {
         socket.emit('error', newError('noTNC', ECONNREFUSED));
+    };
+    return socket;
+}
+
+function noTNCHost(options, spec) {
+    const socket = happySocket(options, spec);
+    socket.connect = function(that, options, callback) {
+        socket.emit('error', newError('noTNCHost', ETIMEDOUT));
     };
     return socket;
 }
@@ -457,6 +466,23 @@ describe('Server', function() {
             });
             server.listen({host: 'N0CALL', port: 1, newSocket: function(options) {
                 return noTNC(options, spec);
+            }});
+        });
+        return expectAsync(closed).toBeResolved();
+    });
+
+    it('should report no TNC host', function() {
+        const spec = this;
+        const closed = new Promise(function(resolve, reject) {
+            server.on('listening', function(err) {
+                reject('listening');
+            });
+            server.on('error', function(err) {
+                expect(err.code).toEqual(ETIMEDOUT);
+                resolve();
+            });
+            server.listen({host: 'N0CALL', port: 1, newSocket: function(options) {
+                return noTNCHost(options, spec);
             }});
         });
         return expectAsync(closed).toBeResolved();
