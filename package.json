@@ -6,9 +6,7 @@
   "engines": {
     "node": ">=8.17.0"
   },
-  "dependencies": {
-    "bunyan": "^1.8.15"
-  },
+  "dependencies": {},
   "scripts": {
     "test": "node ./checknode.js && jasmine"
   },
@@ -28,6 +26,7 @@
   },
   "homepage": "https://github.com/jmkristian/node-agwpe#readme",
   "devDependencies": {
+    "bunyan": "^1.8.15",
     "jasmine": "^4.6.0",
     "sinon": "^15.0.2"
   }

@@ -35,7 +35,6 @@ events: a 'finish' event from Connection and 'end' events
 from DataToFrames and ConnectionThrottle.
 */
 
-const Bunyan = require('bunyan');
 const EventEmitter = require('events');
 const Net = require('net');
 const Stream = require('stream');
@@ -45,10 +44,15 @@ const DefaultFrameLength = 128;
 const NoPID = 0xF0;
 const KByte = 1 << 10;
 
-const LogNothing = Bunyan.createLogger({
-    name: 'AGWPE',
-    level: Bunyan.FATAL + 100,
-});
+const LogNothing = {
+    child: function(){return LogNothing;},
+    trace: function(){},
+    debug: function(){},
+    info: function(){},
+    warn: function(){},
+    error: function(){},
+    fatal: function(){},
+};
 
 function newError(message, code) {
     const err = new Error(message);
