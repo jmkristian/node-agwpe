@@ -411,7 +411,7 @@ class PortRouter extends Router {
             break;
         case 'X': // registered myCall
             if (!(frame.data && frame.data.length > 0 && frame.data[0] == 1)) {
-                this.server.emit('error', newError('listen failed: ' + getFrameSummary(frame)));
+                this.server.emit('error', newError('listen failed: ' + getFrameSummary(frame), 'ENOENT'));
             }
             break;
         default:
@@ -931,7 +931,7 @@ class Server extends EventEmitter {
             throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
         }
         this.listening = true;
-        var socket = new (options.Socket || net.Socket)();
+        var socket = (options.newSocket || function(){return new net.Socket();})();
         this.onErrorOrTimeout(socket);
         const that = this;
         socket.on('close', function() {
@@ -964,7 +964,7 @@ class Server extends EventEmitter {
                 this.listenBuffer = [options, callback];
                 return;
             } else if (ports.length <= 0) {
-                this.emit('error', newError('The TNC has no ports.'));
+                this.emit('error', newError('The TNC has no ports.', 'ENOENT'));
                 return;
             }
         }
