@@ -903,7 +903,7 @@ class Server extends EventEmitter {
         }
         const that = this;
         this.log = getLogger(options, this);
-        this.log.debug('new(%o, %s)', options, typeof onConnect);
+        this.log.trace('new(%o, %s)', options, typeof onConnect);
         this.options = options;
         this.listening = false;
         this.fromAGW = new AGWReader(options);
@@ -916,7 +916,7 @@ class Server extends EventEmitter {
     listen(options, callback) {
         this.log.trace('listen(%o)', options);
         if (!(options && options.host && (!Array.isArray(options.host) || options.host.length > 0))) {
-            throw newError('no options.host');
+            throw newError('no options.host', 'ERR_INVALID_ARG_VALUE');
         }
         if (options && options.port) {
             var ports = options.port;
@@ -931,7 +931,7 @@ class Server extends EventEmitter {
             throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
         }
         this.listening = true;
-        var socket = (options.newSocket || function(){return new net.Socket();})();
+        var socket = (options.newSocket || function(){return new Net.Socket();})();
         this.onErrorOrTimeout(socket);
         const that = this;
         socket.on('close', function() {
