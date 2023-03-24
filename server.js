@@ -384,21 +384,30 @@ class PortRouter extends Router {
     }
 
     onFrameFromAGW(frame, client) {
-        this.log.trace('onFrameFromAGW %o', frame);
+        this.log.debug('onFrameFromAGW %s', getFrameSummary(frame));
+        const that = this;
         switch(frame.dataKind) {
         case 'G': // available ports
-            var parts = frame.data.toString('ascii').split(';');
-            var numberOfPorts = parseInt(parts[0], 10);
-            this.server.setNumberOfPorts(numberOfPorts);
-            for (var p = 0; p < numberOfPorts; ++p) {
-                this.toAGW.write({dataKind: 'g', port: p});
+            try {
+                var parts = frame.data.toString('ascii').split(';');
+                var ports = [];
+                for (var p = 1; p < parts.length; ++p) {
+                    var found = (/^port(\d+)/i).exec(parts[p]);
+                    if (found) {
+                        ports.push(parseInt(found[1]));
+                    }
+                }
+                ports.forEach(function(port) {
+                    that.toAGW.write({dataKind: 'g', port: port});
+                });
+                this.server.setPorts(ports);
+            } catch(err) {
+                this.server.emit('error', err);
             }
             break;
         case 'X': // registered myCall
-            if (frame.data && frame.data.length > 0 && frame.data[0] == 1) {
-                this.server.emit('listening', {localPort: frame.port, localAddress: frame.callFrom});
-            } else {
-                this.server.emit('error', 'listen failed: ' + getFrameSummary(frame));
+            if (!(frame.data && frame.data.length > 0 && frame.data[0] == 1)) {
+                this.server.emit('error', newError('listen failed: ' + getFrameSummary(frame)));
             }
             break;
         default:
@@ -410,7 +419,7 @@ class PortRouter extends Router {
 /** Manages objects that handle data to and from each remote station via AX.25. */
 class ConnectionRouter extends Router {
 
-    constructor(toAGW, fromAGW, options, server) {
+   constructor(toAGW, fromAGW, options, server) {
         super(toAGW, fromAGW, options, server);
     }
 
@@ -572,7 +581,7 @@ class Throttle extends Stream.Transform {
             // Don't send it now.
             if (this.buffer) {
                 var err = newError('already have a buffer');
-                this.log.error(err);
+                this.log.debug(err);
                 this.emit('error', err);
                 throw err;
             }
@@ -892,7 +901,7 @@ class Server extends EventEmitter {
         this.log = getLogger(options, this);
         this.log.debug('new(%o, %s)', options, typeof onConnect);
         this.options = options;
-        this.numberOfPorts = null; // until notified otherwise
+        this.listening = false;
         this.fromAGW = new AGWReader(options);
         this.onErrorOrTimeout(this.fromAGW);
         this.toAGW = new AGWWriter(options);
@@ -905,58 +914,65 @@ class Server extends EventEmitter {
         if (!(options && options.host && (!Array.isArray(options.host) || options.host.length > 0))) {
             throw newError('no options.host');
         }
+        if (options && options.port) {
+            var ports = options.port;
+            (Array.isArray(ports) ? ports : [ports]).forEach(function(port) {
+                if (port < 0 || port > 255) {
+                    throw newError(`port ${port} is outside the range 0..255`,
+                                   'ERR_INVALID_ARG_VALUE');
+                }
+            });
+        }
         if (this.listening) {
             throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
         }
         this.listening = true;
-        this._listen(options, callback);
-    }
-
-    _listen(options, callback) {
-        const that = this;
-        const hosts = Array.isArray(options.host) ? options.host : [options.host];
-        var ports = options.port;
-        if (ports == null) {
-            if (this.numberOfPorts == null) {
-                // Postpone this request until we know the numberOfPorts.
-                this.listenBuffer = [options, callback];
-                return;
-            } else if (this.numberOfPorts <= 0) {
-                this.emit('error', newError('The TNC has no ports.'));
-                return;
-            }
-            ports = [];
-            for (var p = 0; p < this.numberOfPorts; ++p) {
-                ports.push(p);
-            }
-        } else {
-            ports = Array.isArray(ports) ? ports : [ports];
-            for (var p = 0; p < ports.length; ++p) {
-                ports[p] = parseInt(ports[p] + '');
-            }
-        }
         var socket = new (options.Socket || net.Socket)();
         this.onErrorOrTimeout(socket);
+        const that = this;
         socket.on('close', function() {
             that.log.trace('socket close');
             socket.unpipe(that.fromAGW);
             that.toAGW.unpipe(that.socket);
         });
         socket.connect(this.options, function() {
+            socket.pipe(that.fromAGW);
+            that.toAGW.pipe(socket);
             that.socket = socket;
-            that.socket.pipe(that.fromAGW);
-            that.toAGW.pipe(that.socket);
-            that._address = {host: hosts, port: ports};
-            that.emit('listening');
-            if (callback) callback();
             that.toAGW.write({dataKind: 'G'}); // Get information about all ports
-            ports.forEach(function(onePort) {
-                hosts.forEach(function(oneHost) {
-                    that.toAGW.write({
-                        dataKind: 'X', // Register
-                        port: onePort,
-                        callFrom: oneHost,
-                    });
+            that._connected(options, callback);
+        });
+    }
+
+    _connected(options, callback) {
+        const that = this;
+        const hosts = Array.isArray(options.host) ? options.host : [options.host];
+        var ports = options.port;
+        if (ports != null) {
+            ports = Array.isArray(ports) ? ports : [ports];
+            for (var p = 0; p < ports.length; ++p) {
+                ports[p] = parseInt(ports[p] + '');
+            }
+        } else {
+            ports = this.ports;
+            if (!ports) {
+                // Postpone until we know what ports exist.
+                this.listenBuffer = [options, callback];
+                return;
+            } else if (ports.length <= 0) {
+                this.emit('error', newError('The TNC has no ports.'));
+                return;
+            }
+        }
+        this._address = {host: hosts, port: ports};
+        if (callback) callback();
+        this.emit('listening');
+        ports.forEach(function(onePort) {
+            hosts.forEach(function(oneHost) {
+                that.toAGW.write({
+                    dataKind: 'X', // Register
+                    port: onePort,
+                    callFrom: oneHost,
                 });
             });
         });
@@ -977,13 +993,14 @@ class Server extends EventEmitter {
         });
     }
 
-    setNumberOfPorts(number) {
-        this.numberOfPorts = number;
+    setPorts(ports) {
+        this.log.debug('setPorts %o', ports);
+        this.ports = ports;
         if (this.listenBuffer) {
             const options = this.listenBuffer[0];
             const callback = this.listenBuffer[1];
             delete this.listenBuffer;
-            this._listen(options, callback);
+            this._connected(options, callback);
         }
     }
 
