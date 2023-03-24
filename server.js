@@ -841,7 +841,13 @@ class Connection extends Stream.Duplex {
         this.port = toAGW.port;
         this.localAddress = toAGW.myCall;
         this.remoteAddress = toAGW.theirCall;
-        this.iAmClosed = true;
+        this.iAmClosed = false;
+        this.on('pipe', function(from) {
+            this.log.trace('pipe from %s', from.constructor.name);
+        });
+        this.on('unpipe', function(from) {
+            this.log.trace('unpipe from %s', from.constructor.name);
+        });
     }
 
     emitClose() {
@@ -858,18 +864,22 @@ class Connection extends Stream.Duplex {
     onFrameFromAGW(frame) {
         this.log.trace('received %s frame', frame.dataKind);
         switch(frame.dataKind) {
-        case 'D': // data
-            if (!this.iAmClosed) {
-                if (!this.receiveBufferIsFull) {
-                    this.receiveBufferIsFull = !this.push(frame.data);
-                } else {
-                    this.emit('error', newError('receive buffer overflow: '
-                                                + getDataSummary(frame.data)));
-                }
-            }
-            break;
         case 'd': // disconnect
             this.end();
+            break;
+        case 'D': // data
+            if (this.iAmClosed) {
+                this.emit('error', newError('received data after close '
+                                            + getDataSummary(frame.data)));
+            } else if (this.receiveBufferIsFull) {
+                this.emit('error', newError('receive buffer overflow: '
+                                            + getDataSummary(frame.data)));
+            } else {
+                if (this.log.trace()) {
+                    this.log.trace(`push ${frame.data}`);
+                }
+                this.receiveBufferIsFull = !this.push(frame.data);
+            }
             break;
         default:
         }
@@ -966,9 +976,12 @@ class Server extends EventEmitter {
                 return;
             }
         }
-        this._address = {host: hosts, port: ports};
-        if (callback) callback();
-        this.emit('listening');
+        this._address = {
+            host: hosts.length <= 0 ? null : hosts.length == 1 ? hosts[0] : hosts,
+            port: ports.length <= 0 ? null : ports.length == 1 ? ports[0] : ports,
+        };
+        if (callback) callback(this._address);
+        this.emit('listening', this._address);
         ports.forEach(function(onePort) {
             hosts.forEach(function(oneHost) {
                 that.toAGW.write({
