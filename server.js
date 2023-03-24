@@ -209,10 +209,10 @@ class AGWReader extends Stream.Writable {
         this.header = Buffer.alloc(HeaderLength);
         this.headerLength = 0;
         this.on('pipe', function(from) {
-            this.log.debug('pipe from %s', from.constructor.name);
+            this.log.trace('pipe from %s', from.constructor.name);
         });
         this.on('unpipe', function(from) {
-            this.log.debug('unpipe from %s', from.constructor.name);
+            this.log.trace('unpipe from %s', from.constructor.name);
         });
     }
 
