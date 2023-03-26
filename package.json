@@ -1,6 +1,6 @@
 {
   "name": "@jmkristian/node-agwpe",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Communicate via AX.25 in the style of node net, using an AGWPE-compatible TNC.",
   "main": "index.js",
   "engines": {
