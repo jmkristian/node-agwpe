@@ -1,39 +1,15 @@
 const AGWPE = require('../../server.js');
-const Bunyan = require('bunyan');
-const Net = require('net');
+const MockNet = require('../mockNet/mockNet.js');
 const sinon = require('sinon');
 const Stream = require('stream');
-const util = require('util');
 
-const ECONNREFUSED = 'ECONNREFUSED';
-const ETIMEDOUT = 'ETIMEDOUT';
+const exposePromise = MockNet.exposePromise;
+const log = MockNet.log;
+const LogNothing = MockNet.LogNothing;
+const mockNet = MockNet.mockNet;
+const newError = MockNet.newError;
+
 const HappyPorts = '2;Port1 stub;Port2 stub';
-
-const logStream = new Stream();
-const log = Bunyan.createLogger({
-    name: 'ServerSpec',
-    level: Bunyan.INFO,
-    streams: [{
-        type: "raw",
-        stream: logStream,
-    }],
-});
-logStream.writable = true;
-logStream.write = function(item) {
-    var c = item['class'];
-    c = c ? c + ' ' : '';
-    console.log(`${item.level}: ${c}${item.msg}`);
-}
-const LogNothing = Bunyan.createLogger({
-    name: 'ServerSpec',
-    level: Bunyan.FATAL + 100,
-});
-
-function newError(message, code) {
-    const err = new Error(message);
-    if (code) err.code = code;
-    return err;
-}
 
 /** A Reader, but with a distinct class name (for logging). */
 class stubReader extends AGWPE.Reader {
@@ -42,107 +18,23 @@ class stubReader extends AGWPE.Reader {
     }
 }
 
-class mockSocket extends Stream.Duplex {
-    constructor(spec, options, respond) {
-        super({
-            readable: true, // default
-            writable: true, // default
-        });
-        const that = this;
-        this.log = (options ? (options.logger || LogNothing) : log)
-            .child({'class': this.constructor.name});
-        this.log.debug('new(%o)', options);
-        this._read_buffer = [];
-        this._pushable = false;
-        this.reader = new stubReader({logger: options && options.logger});
-        this.reader.emitFrameFromAGW = function(frame) {
-            try {
-                that.toReader(respond(frame));
-            } catch(err) {
-                that.emit('error', err);
-            }
-        };
-        this.on('pipe', function(from) {
-            that.log.debug('pipe from %s', from.constructor.name);
-        });
-        this.on('unpipe', function(from) {
-            that.log.debug('unpipe from %s', from.constructor.name);
-        });
-        spec.theSocket = this;
-    }
-    connect(options, callback) {
-        this.log.debug(`connect(%s, %s)`, options, typeof callback);
-        if (callback) setTimeout(callback, 10); // simulate time to connect
-    }
-    _destroy(err, callback) {
-        this.emit('close');
-        if (callback) callback();
-    }
-    _write(data, encoding, callback) {
-        this.reader.write(data, encoding, callback);
-    }
-    _read(size) {
-        this.log.trace(`_read(%d)`, size);
-        this._pushable = true;
-        setTimeout(function(that) {
-            that.pushMore();
-        }, 10, this);
-    }
-    pushMore() {
-        while (this._pushable && this._read_buffer.length > 0) {
-            const response = this._read_buffer.shift();
-            const frame = AGWPE.toFrame(response);
-            this.log.trace('push %d %o', frame.length, response);
-            this._pushable = this.push(frame);
-        }
-    }
-    toReader(response) {
-        this.log.trace('toReader %o', response);
-        if (response) {
-            this._read_buffer.push(response);
-            this.pushMore();
-        }
-    }
-}
-
-class mockNet {
-    constructor(spec, options) {
-        log.debug('new mockNet(%s, %o)', typeof spec, options);
-        this.spec = spec;
-        this.options = options;
-        const that = this;
-        this._newSocket = function() {
-            return new mockSocket(that.spec, that.options, that.respond);
-        }
-        this.createConnection = function createConnection(options, connectListener) {
-            log.trace('mockNet.createConnection(%o, %s)', options, typeof connectListener);
-            const socket = that._newSocket();
-            socket.on('error', function(err) {
-                log.trace(err, 'socket.connect');
-                throw err;
-            });
-            socket.connect(options, connectListener);
-            return socket;
-        }
-    }
-}
-
 class happyNet extends mockNet {
-    constructor(spec, options) {
-        super(spec, options);
-        this.respond = function(request) {
+    constructor(spec) {
+        super(spec);
+        this.respond = function(chunk, encoding) {
+            const request = AGWPE.fromHeader(chunk);
             switch(request.dataKind) {
             case 'G':
-                return Object.assign({}, request, {
+                return AGWPE.toFrame(Object.assign({}, request, {
                     data: HappyPorts,
-                });
+                }), 'binary');
             case 'X':
-                return Object.assign({}, request, {
+                return AGWPE.toFrame(Object.assign({}, request, {
                     data: ([0, 1].includes(request.port)
                            ? '\x01' // success
                            : '\x00' // failure
                           ),
-                });
+                }), 'binary');
             default:
                 return null;
             }
@@ -150,143 +42,26 @@ class happyNet extends mockNet {
     }
 }
 
-class noPorts extends happyNet {
-    constructor(spec, options) {
-        super(spec, options);
-        this.respond = function(request) {
+class noPorts extends mockNet {
+    constructor(spec) {
+        super(spec);
+        this.respond = function(chunk, encoding) {
+            const request = AGWPE.fromHeader(chunk);
             switch(request.dataKind) {
             case 'G':
-                return Object.assign({}, request, {
+                return AGWPE.toFrame(Object.assign({}, request, {
                     data: '0;', // no ports
-                });
+                }), 'binary');
             case 'X':
-                return Object.assign({}, request, {
+                return AGWPE.toFrame(Object.assign({}, request, {
                     data: '\x00', // failure
-                });
+                }), 'binary');
             default:
                 return null;
             }
         };
     }
 }
-
-class noTNC extends happyNet{
-    constructor(spec, options) {
-        super(spec, options);
-        const that = this;
-        this._newSocket = function() {
-            log.trace('noTNC._newSocket');
-            var socket = new mockSocket(that.spec, that.options, null);
-            socket.connect = function(that, options, callback) {
-                log.debug('noTNC.socket.connect(%s, %s)', options, typeof callback);
-                socket.emit('error', newError('noTNC', ECONNREFUSED));
-            };
-            return socket;
-        };
-    }
-}
-
-class noTNCHost extends happyNet {
-    constructor(spec, options) {
-        super(spec, options);
-        const that = this;
-        this._newSocket = function() {
-            log.trace('noTNCHost._newSocket');
-            var socket = new mockSocket(that.spec, that.options, null);
-            socket.connect = function(that, options, callback) {
-                log.debug('noTNCHost.socket.connect(%s, %s)', options, typeof callback);
-                socket.emit('error', newError('noTNCHost', ETIMEDOUT));
-            };
-            return socket;
-        };
-    }
-}
-
-function exposePromise() {
-    const result = {};
-    result.promise = new Promise(function(resolve, reject) {
-        result.resolve = resolve;
-        result.reject = reject;
-    });
-    return result;
-}
-
-describe('mockSocket', function() {
-
-    let socket
-
-    beforeEach(function() {
-    });
-
-    afterEach(function() {
-        if (socket) socket.destroy();
-    });
-
-    it('should pipe a response', function() {
-        const spec = this;
-        const request = exposePromise();
-        const response = new Promise(function(resolve, reject) {
-            const reader = new AGWPE.Reader({logger: log});
-            reader.emitFrameFromAGW = function(actual) {
-                log.debug('received %o', actual);
-                actual.data = actual.data.toString('binary'); // could be a Buffer
-                expect(actual).toEqual(jasmine.objectContaining({
-                    dataKind: 'X',
-                    port: 1,
-                    data: '\x01',
-                }));
-                resolve();
-            };
-            socket = new happyNet(spec, {logger: log}).createConnection();
-            socket.pipe(reader);
-            // send the request:
-            socket.write(AGWPE.toFrame({dataKind: 'X', port: 1}), null, function(err) {
-                if (err) request.reject(err);
-                else request.resolve();
-            });
-        });
-        return expectAsync(Promise.all([request.promise, response])).toBeResolved();
-    });
-
-    it('should pipe 2 responses', function() {
-        const spec = this;
-        // Send some requests:
-        const requests = [
-            {dataKind: 'G'},
-            {dataKind: 'X', port: 0, callFrom: 'N0CALL'},
-        ];
-        // Expect some responses:
-        const expected = [
-            [exposePromise(), {dataKind: 'G', data: HappyPorts}],
-            [exposePromise(), {dataKind: 'X', port: 0, data: '\x01'}],
-        ];
-        const results = expected.map(e => e[0].promise);
-        var expectIndex = 0;
-        const reader = new AGWPE.Reader({logger: log});
-        reader.emitFrameFromAGW = function(actual) {
-            log.debug('response %o', actual);
-            actual.data = actual.data.toString('binary'); // could be a Buffer
-            const item = expected[expectIndex++];
-            expect(actual).toEqual(jasmine.objectContaining(item[1]));
-            item[0].resolve();
-        };
-        socket = new happyNet(spec, {logger: log}).createConnection();
-        socket.pipe(reader);
-        // Send the requests:
-        var requestIndex = 0;
-        new Stream.Readable({
-            read: function(size) {
-                if (requestIndex < requests.length) {
-                    const request = requests[requestIndex++];
-                    log.debug('request %o', request);
-                    this.push(AGWPE.toFrame(request));
-                }
-            },
-        }).pipe(socket);
-        return expectAsync(Promise.all(results)).toBeResolved();
-    });
-
-}); // mockSocket
 
 describe('Server', function() {
 
@@ -419,7 +194,7 @@ describe('Server', function() {
 
     it('should connect to AGWPE TNC', function() {
         log.debug('Server should connect to AGWPE TNC');
-        const connectSpy = sandbox.spy(mockSocket.prototype, 'connect');
+        const connectSpy = sandbox.spy(MockNet.mockSocket.prototype, 'connect');
         const connected = new Promise(function(resolve, reject) {
             server.listen({host: 'N0CALL', port: 1}, function() {
                 // Give the server some time to connect the socket.
@@ -439,7 +214,7 @@ describe('Server', function() {
 
     it('should disconnect from AGWPE TNC', function() {
         log.debug('Server should disconnect from AGWPE TNC');
-        const destroySpy = sandbox.spy(mockSocket.prototype, 'destroy');
+        const destroySpy = sandbox.spy(MockNet.mockSocket.prototype, 'destroy');
         const closed = new Promise(function(resolve, reject) {
             server.on('close', function(err) {
                 expect(destroySpy.calledOnce).toBeTruthy();
@@ -492,12 +267,14 @@ describe('Server', function() {
     it('should report no TNC', function() {
         const spec = this;
         const closed = new Promise(function(resolve, reject) {
-            server = new AGWPE.Server(Object.assign({}, serverOptions, {Net: new noTNC(this)}));
+            server = new AGWPE.Server(Object.assign(
+                {}, serverOptions,
+                {Net: new MockNet.noTNC(this)}));
             server.on('listening', function(err) {
                 reject('listening');
             });
             server.on('error', function(err) {
-                expect(err.code).toEqual(ECONNREFUSED);
+                expect(err.code).toEqual(MockNet.ECONNREFUSED);
                 resolve();
             });
             server.listen({host: 'N0CALL', port: 0});
@@ -508,12 +285,14 @@ describe('Server', function() {
     it('should report no TNC host', function() {
         const spec = this;
         const closed = new Promise(function(resolve, reject) {
-            server = new AGWPE.Server(Object.assign({}, serverOptions, {Net: new noTNCHost(this)}));
+            server = new AGWPE.Server(Object.assign(
+            {}, serverOptions,
+            {Net: new MockNet.noTNCHost(this)}));
             server.on('listening', function(err) {
                 reject('listening');
             });
             server.on('error', function(err) {
-                expect(err.code).toEqual(ETIMEDOUT);
+                expect(err.code).toEqual(MockNet.ETIMEDOUT);
                 resolve();
             });
             server.listen({host: 'N0CALL', port: 1})
