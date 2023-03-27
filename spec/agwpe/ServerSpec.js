@@ -1,24 +1,11 @@
 const AGWPE = require('../../server.js');
 const MockNet = require('../mockNet/mockNet.js');
 const sinon = require('sinon');
-const Stream = require('stream');
 
-const exposePromise = MockNet.exposePromise;
 const log = MockNet.log;
-const LogNothing = MockNet.LogNothing;
-const mockNet = MockNet.mockNet;
-const newError = MockNet.newError;
-
 const HappyPorts = '2;Port1 stub;Port2 stub';
 
-/** A Reader, but with a distinct class name (for logging). */
-class stubReader extends AGWPE.Reader {
-    constructor(options) {
-        super(options);
-    }
-}
-
-class happyNet extends mockNet {
+class happyNet extends MockNet.mockNet {
     constructor(spec) {
         super(spec);
         this.respond = function(chunk, encoding) {
@@ -42,7 +29,7 @@ class happyNet extends mockNet {
     }
 }
 
-class noPorts extends mockNet {
+class noPorts extends MockNet.mockNet {
     constructor(spec) {
         super(spec);
         this.respond = function(chunk, encoding) {
@@ -82,6 +69,7 @@ describe('Server', function() {
     });
 
     afterEach(function() {
+        if (this.server) this.server.close();
         sandbox.restore();
     });
 
@@ -195,47 +183,45 @@ describe('Server', function() {
         });
     });
 
-    it('should connect to AGWPE TNC', function() {
-        log.debug('Server should connect to AGWPE TNC');
+    it('should connect to TNC', function() {
+        log.debug('Server should connect to TNC');
         const connectSpy = sandbox.spy(MockNet.mockSocket.prototype, 'connect');
         const connected = new Promise(function(resolve, reject) {
-            server.listen({host: 'N0CALL', port: 1}, function() {
-                // Give the server some time to connect the socket.
-                setTimeout(function() {
-                    expect(connectSpy.calledOnce).toBeTruthy();
-                    expect(connectSpy.getCall(0).args[0])
-                        .toEqual(jasmine.objectContaining({
-                            host: serverOptions.host,
-                            port: serverOptions.port,
-                        }));
-                    resolve();
-                }, 500);
+            server.on('listening', function() {
+                expect(server.listening).toEqual(true);
+                expect(connectSpy.calledOnce).toBeTruthy();
+                expect(connectSpy.getCall(0).args[0])
+                    .toEqual(jasmine.objectContaining({
+                        host: serverOptions.host,
+                        port: serverOptions.port,
+                    }));
+                resolve();
             });
+            server.listen({host: 'N0CALL'});
         });
         return expectAsync(connected).toBeResolved();
     });
 
-    it('should disconnect from AGWPE TNC', function() {
-        log.debug('Server should disconnect from AGWPE TNC');
+    it('should disconnect from TNC', function() {
+        log.debug('Server should disconnect from TNC');
         const destroySpy = sandbox.spy(MockNet.mockSocket.prototype, 'destroy');
         const closed = new Promise(function(resolve, reject) {
+            server.on('listening', function() {
+                expect(server.listening).toEqual(true);
+                server.close();
+            });
             server.on('close', function(err) {
                 expect(destroySpy.calledOnce).toBeTruthy();
                 resolve();
             });
-            server.listen({host: 'N0CALL', port: 1}, function() {
-                // Give the server some time to connect the socket.
-                setTimeout(function() {
-                    server.close();
-                }, 500);
-            });
+            server.listen({host: ['N0CALL']});
         });
         return expectAsync(closed).toBeResolved();
     });
 
     it('should report a nonexistent port', function() {
         log.debug('Server should report a nonexistent port');
-        const listening = new Promise(function(resolve, reject) {
+        const reported = new Promise(function(resolve, reject) {
             var listening = false;
             server.on('listening', function(err) {
                 listening = true;
@@ -248,7 +234,7 @@ describe('Server', function() {
             });
             server.listen({host: 'N0CALL', port: 127});
         });
-        return expectAsync(listening).toBeResolved();
+        return expectAsync(reported).toBeResolved();
     });
 
     it('should report no ports', function() {
@@ -269,7 +255,7 @@ describe('Server', function() {
 
     it('should report no TNC', function() {
         const spec = this;
-        const closed = new Promise(function(resolve, reject) {
+        const reported = new Promise(function(resolve, reject) {
             server = new AGWPE.Server(Object.assign(
                 {}, serverOptions,
                 {Net: new MockNet.noTNC(this)}));
@@ -282,12 +268,12 @@ describe('Server', function() {
             });
             server.listen({host: 'N0CALL', port: 0});
         });
-        return expectAsync(closed).toBeResolved();
+        return expectAsync(reported).toBeResolved();
     });
 
     it('should report no TNC host', function() {
         const spec = this;
-        const closed = new Promise(function(resolve, reject) {
+        const reported = new Promise(function(resolve, reject) {
             server = new AGWPE.Server(Object.assign(
             {}, serverOptions,
             {Net: new MockNet.noTNCHost(this)}));
@@ -300,7 +286,7 @@ describe('Server', function() {
             });
             server.listen({host: 'N0CALL', port: 1})
         });
-        return expectAsync(closed).toBeResolved();
+        return expectAsync(reported).toBeResolved();
     });
 
 }); // Server
