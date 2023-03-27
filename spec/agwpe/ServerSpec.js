@@ -113,17 +113,20 @@ describe('Server', function() {
     });
 
     it('should not listen when listening', function() {
-        var actual = null;
-        server.listen({host: ['N0CALL'], port: 1});
-        try {
-            server.listen({host: ['N0CALL'], port: 1});
-            fail('listen twice');
-        } catch(err) {
-            actual = err;
-        }
-        expect(actual).toEqual(jasmine.objectContaining({
-            code: 'ERR_SERVER_ALREADY_LISTEN',
-        }));
+        const listening = new Promise(function(resolve, reject) {
+            server.listen({host: ['N0CALL'], port: 1}, function() {
+                resolve();
+            });
+            try {
+                server.listen({host: ['N0CALL'], port: 1});
+                fail('listen twice');
+            } catch(err) {
+                expect(err).toEqual(jasmine.objectContaining({
+                    code: 'ERR_SERVER_ALREADY_LISTEN',
+                }));
+            }
+        });
+        return expectAsync(listening).toBeResolved();
     });
 
     it('should callback from listening', function() {
