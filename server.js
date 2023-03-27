@@ -205,7 +205,7 @@ class AGWReader extends Stream.Writable {
                 (options.frameLength || DefaultFrameLength), // bytes
         });
         this.log = getLogger(options, this);
-        this.log.trace('new(%o)', options);
+        this.log.trace('new(%s)', options);
         this.header = Buffer.alloc(HeaderLength);
         this.headerLength = 0;
         this.on('pipe', function(from) {
@@ -317,7 +317,7 @@ class Router extends EventEmitter {
     constructor(toAGW, fromAGW, options, server) {
         super();
         this.log = getLogger(options, this);
-        this.log.trace('new %o', options);
+        this.log.trace('new %s', options);
         this.toAGW = toAGW;
         this.fromAGW = fromAGW;
         this.options = options;
@@ -448,11 +448,11 @@ class ConnectionRouter extends Router {
         // The pipeline of streams from connecton to throttle
         // is ended by relaying the 'end' events.
         connection.on('finish', function(info) {
-            that.log.trace('finished %s; %s.end', connectionClass, dataToFramesClass);
+            that.log.trace('%s emitted finish; %s.end', connectionClass, dataToFramesClass);
             dataToFrames.end();
         });
         dataToFrames.on('end', function(info) {
-            that.log.trace('ended %s; %s.end', dataToFramesClass, throttleClass);
+            that.log.trace('%s emitted end; %s.end', dataToFramesClass, throttleClass);
             throttle.end();
         });
         // The connection emits close after the throttle ends;
@@ -464,8 +464,8 @@ class ConnectionRouter extends Router {
         });
         ['error', 'timeout'].forEach(function(event) {
             throttle.on(event, function(info) {
-                that.log.trace('%sed %s; %s.emit %s',
-                               event, throttleClass, connectionClass, event);
+                that.log.trace('%s emitted %s; %s.emit %s',
+                               throttleClass, event, connectionClass, event);
                 connection.emit(event, info);
             });
         });
@@ -500,7 +500,7 @@ class Throttle extends Stream.Transform {
             writableHighWaterMark: 1,
         });
         this.log = getLogger(options, this);
-        this.log.trace('new %o', options);
+        this.log.trace('new %s', options);
         this.toAGW = toAGW;
         this.inFlight = 0;
         this.maxInFlight = MaxFramesInFlight;
@@ -714,7 +714,7 @@ class DataToFrames extends Stream.Transform {
             writableHighWaterMark: options.frameLength || DefaultFrameLength,
         });
         this.log = getLogger(options, this);
-        this.log.trace('new %o', options);
+        this.log.trace('new %s', options);
         this.port = frame.port;
         this.myCall = frame.callTo;
         this.theirCall = frame.callFrom;
@@ -836,7 +836,7 @@ class Connection extends Stream.Duplex {
             writableHighWaterMark: options.frameLength || DefaultFrameLength,
         });
         this.log = getLogger(options, this);
-        this.log.trace('new %o', options);
+        this.log.trace('new %s', options);
         this.toAGW = toAGW;
         this.port = toAGW.port;
         this.localAddress = toAGW.myCall;
@@ -911,7 +911,7 @@ class Server extends EventEmitter {
         }
         const that = this;
         this.log = getLogger(options, this);
-        this.log.trace('new(%o, %s)', options, typeof onConnect);
+        this.log.trace('new(%s, %s)', options, typeof onConnect);
         this.options = options;
         this.listening = false;
         this.fromAGW = new AGWReader(options);
@@ -922,7 +922,7 @@ class Server extends EventEmitter {
     }
 
     listen(options, callback) {
-        this.log.trace('listen(%o)', options);
+        this.log.trace('listen(%o, %s)', options, typeof callback);
         if (!(options && options.host && (!Array.isArray(options.host) || options.host.length > 0))) {
             throw newError('no options.host', 'ERR_INVALID_ARG_VALUE');
         }
@@ -939,21 +939,32 @@ class Server extends EventEmitter {
             throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
         }
         this.listening = true;
-        var socket = (options.newSocket || function(){return new Net.Socket();})();
-        this.onErrorOrTimeout(socket);
-        const that = this;
-        socket.on('close', function() {
-            that.log.trace('socket close');
-            socket.unpipe(that.fromAGW);
-            that.toAGW.unpipe(that.socket);
-        });
-        socket.connect(this.options, function() {
-            socket.pipe(that.fromAGW);
-            that.toAGW.pipe(socket);
-            that.socket = socket;
-            that.toAGW.write({dataKind: 'G'}); // Get information about all ports
-            that._connected(options, callback);
-        });
+        try {
+            const that = this;
+            const connectOptions = Object.assign({host: '127.0.0.1'}, this.options);
+            delete connectOptions.logger;
+            delete connectOptions.Net;
+            this.log.trace('%s.createConnection(%o)',
+                           this.options.Net ? 'options.Net' : 'Net',
+                           connectOptions);
+            const socket = (this.options.Net || Net)
+                  .createConnection(connectOptions, function connectionListener(err) {
+                      that.log.trace('connectionListener(%s)', err);
+                      socket.pipe(that.fromAGW);
+                      that.toAGW.pipe(socket);
+                      that.socket = socket;
+                      that.toAGW.write({dataKind: 'G'}); // Get information about all ports
+                      that._connected(options, callback);
+                  });
+            this.onErrorOrTimeout(socket);
+            socket.on('close', function() {
+                that.log.trace('socket emitted close');
+                socket.unpipe(that.fromAGW);
+                that.toAGW.unpipe(that.socket);
+            });
+        } catch(err) {
+            this.emit('error', err);
+        }
     }
 
     _connected(options, callback) {
@@ -1001,8 +1012,8 @@ class Server extends EventEmitter {
         const that = this;
         ['error', 'timeout'].forEach(function(event) {
             from.on(event, function(info) {
-                that.log.trace('%sed %s; emit %s',
-                               event, from.constructor.name, event);
+                that.log.trace('%s emitted %s %s',
+                               from.constructor.name, event, info || '');
                 that.emit(event, info);
             });
         });

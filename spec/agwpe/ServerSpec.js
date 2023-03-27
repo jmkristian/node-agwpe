@@ -43,14 +43,14 @@ class stubReader extends AGWPE.Reader {
 }
 
 class mockSocket extends Stream.Duplex {
-    constructor(options, spec, respond) {
+    constructor(spec, options, respond) {
         super({
             readable: true, // default
             writable: true, // default
         });
         const that = this;
         this.log = (options ? (options.logger || LogNothing) : log)
-            .child({'class': 'mockSocket'});
+            .child({'class': this.constructor.name});
         this.log.debug('new(%o)', options);
         this._read_buffer = [];
         this._pushable = false;
@@ -72,7 +72,7 @@ class mockSocket extends Stream.Duplex {
     }
     connect(options, callback) {
         this.log.debug(`connect(%s, %s)`, options, typeof callback);
-        if (callback) callback();
+        if (callback) setTimeout(callback, 10); // simulate time to connect
     }
     _destroy(err, callback) {
         this.emit('close');
@@ -105,57 +105,101 @@ class mockSocket extends Stream.Duplex {
     }
 }
 
-function happySocket(options, spec) {
-    return new mockSocket(options, spec, function(request) {
-        switch(request.dataKind) {
-        case 'G':
-            return Object.assign({}, request, {
-                data: HappyPorts,
-            });
-        case 'X':
-            return Object.assign({}, request, {
-                data: ([0, 1].includes(request.port)
-                       ? '\x01' // success
-                       : '\x00' // failure
-                      ),
-            });
-        default:
-            return null;
+class mockNet {
+    constructor(spec, options) {
+        log.debug('new mockNet(%s, %o)', typeof spec, options);
+        this.spec = spec;
+        this.options = options;
+        const that = this;
+        this._newSocket = function() {
+            return new mockSocket(that.spec, that.options, that.respond);
         }
-    });
-}
-
-function noPorts(options, spec) {
-    return new mockSocket(options, spec, function(request) {
-        switch(request.dataKind) {
-        case 'G':
-            return Object.assign({}, request, {
-                data: '0;', // no ports
+        this.createConnection = function createConnection(options, connectListener) {
+            log.trace('mockNet.createConnection(%o, %s)', options, typeof connectListener);
+            const socket = that._newSocket();
+            socket.on('error', function(err) {
+                log.trace(err, 'socket.connect');
+                throw err;
             });
-        case 'X':
-            return Object.assign({}, request, {
-                data: '\x00', // failure
-            });
-        default:
-            return null;
+            socket.connect(options, connectListener);
+            return socket;
         }
-    });
+    }
 }
 
-function noTNC(options, spec) {
-    const socket = happySocket(options, spec);
-    socket.connect = function(that, options, callback) {
-        socket.emit('error', newError('noTNC', ECONNREFUSED));
-    };
-    return socket;
+class happyNet extends mockNet {
+    constructor(spec, options) {
+        super(spec, options);
+        this.respond = function(request) {
+            switch(request.dataKind) {
+            case 'G':
+                return Object.assign({}, request, {
+                    data: HappyPorts,
+                });
+            case 'X':
+                return Object.assign({}, request, {
+                    data: ([0, 1].includes(request.port)
+                           ? '\x01' // success
+                           : '\x00' // failure
+                          ),
+                });
+            default:
+                return null;
+            }
+        };
+    }
 }
 
-function noTNCHost(options, spec) {
-    const socket = happySocket(options, spec);
-    socket.connect = function(that, options, callback) {
-        socket.emit('error', newError('noTNCHost', ETIMEDOUT));
-    };
-    return socket;
+class noPorts extends happyNet {
+    constructor(spec, options) {
+        super(spec, options);
+        this.respond = function(request) {
+            switch(request.dataKind) {
+            case 'G':
+                return Object.assign({}, request, {
+                    data: '0;', // no ports
+                });
+            case 'X':
+                return Object.assign({}, request, {
+                    data: '\x00', // failure
+                });
+            default:
+                return null;
+            }
+        };
+    }
+}
+
+class noTNC extends happyNet{
+    constructor(spec, options) {
+        super(spec, options);
+        const that = this;
+        this._newSocket = function() {
+            log.trace('noTNC._newSocket');
+            var socket = new mockSocket(that.spec, that.options, null);
+            socket.connect = function(that, options, callback) {
+                log.debug('noTNC.socket.connect(%s, %s)', options, typeof callback);
+                socket.emit('error', newError('noTNC', ECONNREFUSED));
+            };
+            return socket;
+        };
+    }
+}
+
+class noTNCHost extends happyNet {
+    constructor(spec, options) {
+        super(spec, options);
+        const that = this;
+        this._newSocket = function() {
+            log.trace('noTNCHost._newSocket');
+            var socket = new mockSocket(that.spec, that.options, null);
+            socket.connect = function(that, options, callback) {
+                log.debug('noTNCHost.socket.connect(%s, %s)', options, typeof callback);
+                socket.emit('error', newError('noTNCHost', ETIMEDOUT));
+            };
+            return socket;
+        };
+    }
 }
 
 function exposePromise() {
@@ -175,7 +219,7 @@ describe('mockSocket', function() {
     });
 
     afterEach(function() {
-        socket.destroy();
+        if (socket) socket.destroy();
     });
 
     it('should pipe a response', function() {
@@ -193,14 +237,12 @@ describe('mockSocket', function() {
                 }));
                 resolve();
             };
-            socket = happySocket({logger: log}, spec);
-            socket.connect(null, function() {
-                socket.pipe(reader);
-                // send the request:
-                socket.write(AGWPE.toFrame({dataKind: 'X', port: 1}), null, function(err) {
-                    if (err) request.reject(err);
-                    else request.resolve();
-                });
+            socket = new happyNet(spec, {logger: log}).createConnection();
+            socket.pipe(reader);
+            // send the request:
+            socket.write(AGWPE.toFrame({dataKind: 'X', port: 1}), null, function(err) {
+                if (err) request.reject(err);
+                else request.resolve();
             });
         });
         return expectAsync(Promise.all([request.promise, response])).toBeResolved();
@@ -228,21 +270,19 @@ describe('mockSocket', function() {
             expect(actual).toEqual(jasmine.objectContaining(item[1]));
             item[0].resolve();
         };
-        socket = happySocket({logger: log}, spec);
-        socket.connect(null, function() {
-            socket.pipe(reader);
-            // Send the requests:
-            var requestIndex = 0;
-            new Stream.Readable({
-                read: function(size) {
-                    if (requestIndex < requests.length) {
-                        const request = requests[requestIndex++];
-                        log.debug('request %o', request);
-                        this.push(AGWPE.toFrame(request));
-                    }
-                },
-            }).pipe(socket);
-        });
+        socket = new happyNet(spec, {logger: log}).createConnection();
+        socket.pipe(reader);
+        // Send the requests:
+        var requestIndex = 0;
+        new Stream.Readable({
+            read: function(size) {
+                if (requestIndex < requests.length) {
+                    const request = requests[requestIndex++];
+                    log.debug('request %o', request);
+                    this.push(AGWPE.toFrame(request));
+                }
+            },
+        }).pipe(socket);
         return expectAsync(Promise.all(results)).toBeResolved();
     });
 
@@ -251,26 +291,22 @@ describe('mockSocket', function() {
 describe('Server', function() {
 
     const sandbox = sinon.createSandbox();
-    let serverOptions, server, newSocket
+    let serverOptions, server
 
     beforeEach(function() {
-        const that = this;
         serverOptions = {
             host: Math.floor(Math.random() * (1 << 20)).toString(36),
             port: Math.floor(Math.random() * ((1 << 16) - 1)) + 1,
             logger: log,
+            Net: new happyNet(this),
         };
         server = new AGWPE.Server(serverOptions);
         server.on('error', function(err) {
             log.debug(err);
         });
-        newSocket = function(options) {
-            return happySocket(options, that);
-        }
     });
 
     afterEach(function() {
-        server.close();
         sandbox.restore();
     });
 
@@ -303,10 +339,10 @@ describe('Server', function() {
 
     it('should not listen when listening', function() {
         var actual = null;
-        server.listen({host: ['N0CALL'], port: 1, newSocket: newSocket});
+        server.listen({host: ['N0CALL'], port: 1});
         try {
-            server.listen({host: ['N0CALL'], port: 1, newSocket: newSocket});
-            fail();
+            server.listen({host: ['N0CALL'], port: 1});
+            fail('listen twice');
         } catch(err) {
             actual = err;
         }
@@ -318,7 +354,7 @@ describe('Server', function() {
     it('should callback from listening', function() {
         log.debug('Server should callback from listening');
         const listening = new Promise(function(resolve, reject) {
-            server.listen({host: 'N0CALL', port: 0, newSocket: newSocket}, function() {
+            server.listen({host: 'N0CALL', port: 0}, function() {
                 if (server.listening) {
                     setTimeout(resolve, 500);
                     // The timeout isn't really neccessary, but
@@ -341,7 +377,7 @@ describe('Server', function() {
                     reject('!server.listening');
                 }
             });
-            server.listen({host: 'N0CALL', port: 1, newSocket: newSocket});
+            server.listen({host: 'N0CALL', port: 1});
         });
         return expectAsync(listening).toBeResolved();
     });
@@ -354,7 +390,7 @@ describe('Server', function() {
                     var serverAddress = server.address();
                     log.debug('server.address() %o', serverAddress);
                     expect(serverAddress).toEqual(jasmine.objectContaining({
-                        host: ['N0CALL'],
+                        host: 'N0CALL',
                         port: [0, 1],
                     }));
                     resolve();
@@ -362,7 +398,7 @@ describe('Server', function() {
                     reject(err);
                 }
             });
-            server.listen({host: 'N0CALL', newSocket: newSocket});
+            server.listen({host: 'N0CALL'});
         });
         return expectAsync(listening).toBeResolved();
     });
@@ -385,7 +421,7 @@ describe('Server', function() {
         log.debug('Server should connect to AGWPE TNC');
         const connectSpy = sandbox.spy(mockSocket.prototype, 'connect');
         const connected = new Promise(function(resolve, reject) {
-            server.listen({host: ['N0CALL'], port: 1, newSocket: newSocket}, function() {
+            server.listen({host: 'N0CALL', port: 1}, function() {
                 // Give the server some time to connect the socket.
                 setTimeout(function() {
                     expect(connectSpy.calledOnce).toBeTruthy();
@@ -409,7 +445,7 @@ describe('Server', function() {
                 expect(destroySpy.calledOnce).toBeTruthy();
                 resolve();
             });
-            server.listen({host: 'N0CALL', port: 1, newSocket: newSocket}, function() {
+            server.listen({host: 'N0CALL', port: 1}, function() {
                 // Give the server some time to connect the socket.
                 setTimeout(function() {
                     server.close();
@@ -432,7 +468,7 @@ describe('Server', function() {
                 expect(listening).toEqual(true);
                 resolve();
             });
-            server.listen({host: 'N0CALL', port: 127, newSocket: newSocket});
+            server.listen({host: 'N0CALL', port: 127});
         });
         return expectAsync(listening).toBeResolved();
     });
@@ -440,6 +476,7 @@ describe('Server', function() {
     it('should report no ports', function() {
         const spec = this;
         const closed = new Promise(function(resolve, reject) {
+            server = new AGWPE.Server(Object.assign({}, serverOptions, {Net: new noPorts(this)}));
             server.on('listening', function(err) {
                 reject('listening');
             });
@@ -447,9 +484,7 @@ describe('Server', function() {
                 expect(err.code).toEqual('ENOENT');
                 resolve();
             });
-            server.listen({host: 'N0CALL', newSocket: function(options) {
-                return noPorts(options, spec);
-            }});
+            server.listen({host: 'N0CALL'});
         });
         return expectAsync(closed).toBeResolved();
     });
@@ -457,6 +492,7 @@ describe('Server', function() {
     it('should report no TNC', function() {
         const spec = this;
         const closed = new Promise(function(resolve, reject) {
+            server = new AGWPE.Server(Object.assign({}, serverOptions, {Net: new noTNC(this)}));
             server.on('listening', function(err) {
                 reject('listening');
             });
@@ -464,9 +500,7 @@ describe('Server', function() {
                 expect(err.code).toEqual(ECONNREFUSED);
                 resolve();
             });
-            server.listen({host: 'N0CALL', port: 1, newSocket: function(options) {
-                return noTNC(options, spec);
-            }});
+            server.listen({host: 'N0CALL', port: 0});
         });
         return expectAsync(closed).toBeResolved();
     });
@@ -474,6 +508,7 @@ describe('Server', function() {
     it('should report no TNC host', function() {
         const spec = this;
         const closed = new Promise(function(resolve, reject) {
+            server = new AGWPE.Server(Object.assign({}, serverOptions, {Net: new noTNCHost(this)}));
             server.on('listening', function(err) {
                 reject('listening');
             });
@@ -481,9 +516,7 @@ describe('Server', function() {
                 expect(err.code).toEqual(ETIMEDOUT);
                 resolve();
             });
-            server.listen({host: 'N0CALL', port: 1, newSocket: function(options) {
-                return noTNCHost(options, spec);
-            }});
+            server.listen({host: 'N0CALL', port: 1})
         });
         return expectAsync(closed).toBeResolved();
     });
