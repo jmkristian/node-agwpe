@@ -35,6 +35,6 @@ server.listen({
         port: [0, 1], // AGWPE ports to listen to. Default: all ports
     },
     function onListening(info) { // called when the server begins listening
-        console.log('AGWPE listening ' + (info || ''));
+        console.log('AGWPE listening %o', info);
     });
 ```
