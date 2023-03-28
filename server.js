@@ -841,7 +841,7 @@ class Connection extends Stream.Duplex {
         this.port = toAGW.port;
         this.localAddress = toAGW.myCall;
         this.remoteAddress = toAGW.theirCall;
-        this.iAmClosed = false;
+        this._closed = false;
         this.on('pipe', function(from) {
             this.log.trace('pipe from %s', from.constructor.name);
         });
@@ -854,8 +854,8 @@ class Connection extends Stream.Duplex {
         // The documentation seems to say this.destroy() should emit
         // 'end' and 'close', but I find that doesn't always happen.
         // This works reliably:
-        if (!this.iAmClosed) {
-            this.iAmClosed = true;
+        if (!this._closed) {
+            this._closed = true;
             this.emit('end');
             this.emit('close');
         }
@@ -868,7 +868,7 @@ class Connection extends Stream.Duplex {
             this.end();
             break;
         case 'D': // data
-            if (this.iAmClosed) {
+            if (this._closed) {
                 this.emit('error', newError('received data after close '
                                             + getDataSummary(frame.data)));
             } else if (this.receiveBufferIsFull) {
