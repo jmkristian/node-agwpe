@@ -198,11 +198,9 @@ class AGWReader extends Stream.Writable {
 
     constructor(options) {
         super({
-            readableObjectMode: true,
-            readableHighWaterMark: 1, // frame
-            writableObjectMode: false,
-            writableHighWaterMark: HeaderLength +
-                (options.frameLength || DefaultFrameLength), // bytes
+            objectMode: false,
+            highWaterMark: HeaderLength +
+                ((options && options.frameLength) || DefaultFrameLength), // bytes
         });
         this.log = getLogger(options, this);
         this.log.trace('new(%s)', options);
@@ -287,7 +285,7 @@ class AGWWriter extends Stream.Transform {
         super({
             readableObjectMode: false,
             readableHighWaterMark: HeaderLength +
-                (options.frameLength || DefaultFrameLength), // bytes
+                ((options && options.frameLength) || DefaultFrameLength), // bytes
             writableObjectMode: true,
             writableHighWaterMark: 1, // frame
             defaultEncoding: options && options.encoding,
@@ -297,13 +295,14 @@ class AGWWriter extends Stream.Transform {
 
     _transform(chunk, encoding, afterTransform) {
         if ((typeof chunk) != 'object') {
-            afterTransform(`AGWWriter ${chunk}`);
+            afterTransform(newError(`AGWWriter ${chunk}`, 'ERR_INVALID_ARG_TYPE'));
         } else {
             var frame = toFrame(chunk, encoding);
             if (this.log.debug()) {
                 this.log.debug('> %s', getFrameSummary(chunk));
             }
-            afterTransform(null, frame);
+            this.push(frame);
+            if (afterTransform) afterTransform();
         }
     }
 } // AGWWriter
@@ -384,6 +383,7 @@ class PortRouter extends Router {
     newClient(frame) {
         var throttle = new PortThrottle(this.toAGW, this.options, frame);
         var router = new ConnectionRouter(throttle, throttle, this.options, this.server);
+        throttle.pipe(this.toAGW);
         return throttle;
     }
 
@@ -439,7 +439,7 @@ class ConnectionRouter extends Router {
         }
         var throttle = new ConnectionThrottle(this.toAGW, this.options, frame);
         var dataToFrames = new DataToFrames(this.options, frame);
-        dataToFrames.pipe(throttle);
+        dataToFrames.pipe(throttle).pipe(this.toAGW);
         var connection = new Connection(dataToFrames, this.options);
         var connectionClass = connection.constructor.name;
         var dataToFramesClass = dataToFrames.constructor.name;
@@ -496,15 +496,19 @@ class Throttle extends Stream.Transform {
         super({
             readableObjectMode: true,
             readableHighWaterMark: 1,
+            // The readableHighWaterMark is small to help
+            // maintain an accurate value of this.inFlight.
+            // We don't want to receive an update and set
+            // inFlight = 0 when in fact there are multiple
+            // frames in the read buffer, soon to be sent.
             writableObjectMode: true,
-            writableHighWaterMark: 1,
+            writableHighWaterMark: 5,
         });
         this.log = getLogger(options, this);
         this.log.trace('new %s', options);
         this.toAGW = toAGW;
         this.inFlight = 0;
         this.maxInFlight = MaxFramesInFlight;
-        this.pipe(this.toAGW);
         this.pushFrame(this.queryFramesInFlight());
         // The response will initialize this.inFlight.
     }
@@ -711,14 +715,14 @@ class DataToFrames extends Stream.Transform {
             readableObjectMode: true,
             readableHighWaterMark: 1,
             writableObjectMode: false,
-            writableHighWaterMark: options.frameLength || DefaultFrameLength,
+            writableHighWaterMark: ((options && options.frameLength) || DefaultFrameLength),
         });
         this.log = getLogger(options, this);
         this.log.trace('new %s', options);
         this.port = frame.port;
         this.myCall = frame.callTo;
         this.theirCall = frame.callFrom;
-        this.maxDataLength = options.frameLength || DefaultFrameLength;
+        this.maxDataLength = (options && options.frameLength) || DefaultFrameLength;
         this.bufferCount = 0;
     }
 
@@ -833,7 +837,7 @@ class Connection extends Stream.Duplex {
             readableObjectMode: false,
             readableHighWaterMark: 4 * KByte,
             writableObjectMode: false,
-            writableHighWaterMark: options.frameLength || DefaultFrameLength,
+            writableHighWaterMark: 2 * ((options && options.frameLength) || DefaultFrameLength),
         });
         this.log = getLogger(options, this);
         this.log.trace('new %s', options);
@@ -841,6 +845,7 @@ class Connection extends Stream.Duplex {
         this.port = toAGW.port;
         this.localAddress = toAGW.myCall;
         this.remoteAddress = toAGW.theirCall;
+        this._pushable = false;
         this._closed = false;
         this.on('pipe', function(from) {
             this.log.trace('pipe from %s', from.constructor.name);
@@ -871,14 +876,14 @@ class Connection extends Stream.Duplex {
             if (this._closed) {
                 this.emit('error', newError('received data after close '
                                             + getDataSummary(frame.data)));
-            } else if (this.receiveBufferIsFull) {
+            } else if (!this._pushable) {
                 this.emit('error', newError('receive buffer overflow: '
                                             + getDataSummary(frame.data)));
             } else {
                 if (this.log.trace()) {
                     this.log.trace(`push ${frame.data}`);
                 }
-                this.receiveBufferIsFull = !this.push(frame.data);
+                this._pushable = this.push(frame.data);
             }
             break;
         default:
@@ -886,7 +891,7 @@ class Connection extends Stream.Duplex {
     }
 
     _read(size) {
-        this.receiveBufferIsFull = false;
+        this._pushable = true;
         // onFrameFromAGW calls this.push.
     }
 
