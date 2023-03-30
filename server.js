@@ -384,6 +384,8 @@ class PortRouter extends Router {
         var throttle = new PortThrottle(this.toAGW, this.options, frame);
         var router = new ConnectionRouter(throttle, throttle, this.options, this.server);
         throttle.pipe(this.toAGW);
+        throttle.write(throttle.queryFramesInFlight());
+        // The response will initialize throttle.inFlight.
         return throttle;
     }
 
@@ -438,8 +440,10 @@ class ConnectionRouter extends Router {
             return null;
         }
         var throttle = new ConnectionThrottle(this.toAGW, this.options, frame);
+        throttle.pipe(this.toAGW);
+        throttle.write(throttle.queryFramesInFlight());
         var dataToFrames = new DataToFrames(this.options, frame);
-        dataToFrames.pipe(throttle).pipe(this.toAGW);
+        dataToFrames.pipe(throttle);
         var connection = new Connection(dataToFrames, this.options);
         var connectionClass = connection.constructor.name;
         var dataToFramesClass = dataToFrames.constructor.name;
@@ -509,8 +513,6 @@ class Throttle extends Stream.Transform {
         this.toAGW = toAGW;
         this.inFlight = 0;
         this.maxInFlight = MaxFramesInFlight;
-        this.pushFrame(this.queryFramesInFlight());
-        // The response will initialize this.inFlight.
     }
 
     updateFramesInFlight(frame) {
