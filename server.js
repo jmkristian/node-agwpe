@@ -206,11 +206,12 @@ class AGWReader extends Stream.Writable {
         this.log.trace('new(%s)', options);
         this.header = Buffer.alloc(HeaderLength);
         this.headerLength = 0;
+        const that = this;
         this.on('pipe', function(from) {
-            this.log.trace('pipe from %s', from.constructor.name);
+            that.log.trace('pipe from %s', from.constructor.name);
         });
         this.on('unpipe', function(from) {
-            this.log.trace('unpipe from %s', from.constructor.name);
+            that.log.trace('unpipe from %s', from.constructor.name);
         });
     }
 
@@ -291,6 +292,13 @@ class AGWWriter extends Stream.Transform {
             defaultEncoding: options && options.encoding,
         });
         this.log = getLogger(options, this);
+        const that = this;
+        this.on('pipe', function(from) {
+            that.log.trace('pipe from %s', from.constructor.name);
+        });
+        this.on('unpipe', function(from) {
+            that.log.trace('unpipe from %s', from.constructor.name);
+        });
     }
 
     _transform(chunk, encoding, afterTransform) {
@@ -381,7 +389,7 @@ class PortRouter extends Router {
     }
 
     newClient(frame) {
-        var throttle = new PortThrottle(this.toAGW, this.options, frame);
+        var throttle = new PortThrottle(this.options, frame);
         var router = new ConnectionRouter(throttle, throttle, this.options, this.server);
         throttle.pipe(this.toAGW);
         throttle.write(throttle.queryFramesInFlight());
@@ -439,7 +447,7 @@ class ConnectionRouter extends Router {
         if (frame.dataKind != 'C') { // connect
             return null;
         }
-        var throttle = new ConnectionThrottle(this.toAGW, this.options, frame);
+        var throttle = new ConnectionThrottle(this.options, frame);
         throttle.pipe(this.toAGW);
         throttle.write(throttle.queryFramesInFlight());
         var dataToFrames = new DataToFrames(this.options, frame);
@@ -496,7 +504,7 @@ const MaxFramesInFlight = 8;
 */
 class Throttle extends Stream.Transform {
 
-    constructor(toAGW, options) {
+    constructor(options) {
         super({
             readableObjectMode: true,
             readableHighWaterMark: 1,
@@ -510,9 +518,15 @@ class Throttle extends Stream.Transform {
         });
         this.log = getLogger(options, this);
         this.log.trace('new %s', options);
-        this.toAGW = toAGW;
         this.inFlight = 0;
         this.maxInFlight = MaxFramesInFlight;
+        const that = this;
+        this.on('pipe', function(from) {
+            that.log.trace('pipe from %s', from.constructor.name);
+        });
+        this.on('unpipe', function(from) {
+            that.log.trace('unpipe from %s', from.constructor.name);
+        });
     }
 
     updateFramesInFlight(frame) {
@@ -522,58 +536,61 @@ class Throttle extends Stream.Transform {
     }
 
     pushBuffer() {
-        if (!this.buffer) {
-            if (!this.afterFlushed) {
+        if (!this.buffer && this.afterFlushed) { // flushing is in progress
+            const finalFrame = (this.createLastFrame && this.createLastFrame());
+            if (finalFrame) {
+                // If you send a disconnect frame immediately,
+                // the previous data won't be transmitted.
+                // So wait until inFlight == 0 to send finalFrame.
+                this.log.trace('finalFrame = %j', finalFrame);
+                this.buffer = {frame: finalFrame, afterPush: this.afterFlushed};
+                this.maxInFlight = 1;
+                this.afterFlushed = null;
+            } else { // flushing is complete
+                const afterFlushed = this.afterFlushed;
+                this.afterFlushed = null;
+                afterFlushed();
                 return;
-            } else { // flushing is in progress
-                var nextFrame = this.lastFrame
-                    ? null // this.lastFrame has already been pushed.
-                    : (this.createLastFrame && this.createLastFrame());
-                if (nextFrame) {
-                    // If you send a disconnect frame immediately,
-                    // the previous data won't be transmitted.
-                    // So wait until inFlight == 0 to send nextFrame.
-                    this.log.trace('lastFrame = %j', nextFrame);
-                    this.lastFrame = nextFrame;
-                    this.buffer = {frame: nextFrame, afterPush: this.afterFlushed};
-                    this.maxInFlight = 1;
-                    this.afterFlushed = null;
-                } else { // flushing is complete
-                    this.afterFlushed();
-                    this.afterFlushed = null;
-                    return;
-                }
             }
         }
-        // There is a buffer. Can we push it?
-        if (this.inFlight >= this.maxInFlight) {
-            if (!this.polling) {
-                this.log.trace('start polling');
-                this.polling = setInterval(function(that) {
-                    that.pushFrame(that.queryFramesInFlight());
-                }, 2000, this);
-            }
-        } else {
-            var nextBuffer = this.buffer;
-            this.buffer = null;
-            this.pushFrame(nextBuffer.frame, nextBuffer.afterPush);
-            ++this.inFlight;
-            if (this.inFlight < this.maxInFlight) {
-                this.stopPolling();
+        if (this.buffer) {
+            // There is a buffer. Can we push it?
+            if (this.inFlight >= this.maxInFlight) { // no.
+                if (!this.polling) {
+                    this.log.trace('start polling');
+                    this.polling = setInterval(function(that) {
+                        that.pushFrame(that.queryFramesInFlight());
+                    }, 2000, this);
+                }
+            } else {
+                var nextBuffer = this.buffer;
+                this.buffer = null;
+                this.pushFrame(nextBuffer.frame, nextBuffer.afterPush);
+                if (this.inFlight < this.maxInFlight) {
+                    this.stopPolling();
+                }
             }
         }
     }
 
     pushFrame(frame, afterPush) {
         if (frame != null) {
+            switch(frame.dataKind) {
+            case 'D': // connected data
+            case 'K': // raw AX.25 data
+            case 'M': // UNPROTO data
+            case 'V': // UNPROTO VIA
+                ++this.inFlight;
+                break;
+            default:
+                // non-data frames don't count
+            }
             if (this.log.trace()) {
-                this.log.trace(`pushFrame %s`, getFrameSummary(frame));
+                this.log.trace(`push %s`, getFrameSummary(frame));
             }
             this.push(frame);
         }
-        if (afterPush != null) {
-            afterPush();
-        }
+        if (afterPush) afterPush();
     }
 
     stopPolling() {
@@ -584,23 +601,22 @@ class Throttle extends Stream.Transform {
         }
     }
 
-    _transform(frame, encoding, afterTransform) {
+    _transform(frame, encoding, callback) {
         if (this.inFlight >= MaxFramesInFlight) {
             // Don't send it now.
             if (this.buffer) {
                 var err = newError('already have a buffer');
                 this.log.debug(err);
                 this.emit('error', err);
-                throw err;
+            } else {
+                this.buffer = {frame: frame};
+                if (this.log.trace()) {
+                    this.log.trace('postponed %s', getFrameSummary(frame));
+                }
+                this.pushBuffer();
             }
-            this.buffer = {frame: frame, afterPush: afterTransform};
-            if (this.log.trace()) {
-                this.log.trace('postponed %s', getFrameSummary(frame));
-            }
-            this.pushBuffer();
         } else {
-            this.pushFrame(frame, afterTransform);
-            ++this.inFlight;
+            this.pushFrame(frame);
             if (this.inFlight < this.maxInFlight) {
                 this.stopPolling();
                 if (this.inFlight > 0 && (this.inFlight == this.maxInFlight / 2)) {
@@ -609,17 +625,16 @@ class Throttle extends Stream.Transform {
                 }
             }
         }
+        callback();
     }
 
-    _flush(afterFlushed) {
+    _flush(callback) {
         this.log.trace('_flush');
         var that = this;
-        this.afterFlushed = function destructor(err, data) {
-            that.log.trace('afterFlushed; unpipe %s',
-                           that.toAGW.constructor.name);
+        this.afterFlushed = function afterFlushed() {
+            that.log.trace('afterFlushed');
             that.stopPolling();
-            afterFlushed(err, data);
-            that.unpipe(that.toAGW);
+            callback();
             that.emit('end');
         }
         this.pushBuffer();
@@ -629,14 +644,14 @@ class Throttle extends Stream.Transform {
 /* Limit the rate of frames to an AGW port. */
 class PortThrottle extends Throttle {
 
-    constructor(toAGW, options, frame) {
-        super(toAGW, options);
+    constructor(options, frame) {
+        super(options);
         this.port = frame.port;
         // Each connection adds listeners to this.
         // The number of possible connections is very large, so:
         this.setMaxListeners(0); // unlimited
     }
-    
+
     queryFramesInFlight() {
         return {
             dataKind: 'y',
@@ -655,13 +670,13 @@ class PortThrottle extends Throttle {
             this.emitFrameFromAGW(frame);
         }
     }
-}
+} // PortThrottle
 
 /* Limit the rate of frames to an AX.25 connection. */
 class ConnectionThrottle extends Throttle {
 
-    constructor(toAGW, options, frame) {
-        super(toAGW, options);
+    constructor(options, frame) {
+        super(options);
         this.port = frame.port;
         this.myCall = frame.callTo;
         this.theirCall = frame.callFrom;
@@ -685,6 +700,7 @@ class ConnectionThrottle extends Throttle {
             this.log.trace('received d frame');
             this.receivedDisconnect = true;
             this.emitFrameFromAGW(frame);
+            this.end();
             break;
         default:
             this.emitFrameFromAGW(frame);
@@ -726,6 +742,13 @@ class DataToFrames extends Stream.Transform {
         this.theirCall = frame.callFrom;
         this.maxDataLength = (options && options.frameLength) || DefaultFrameLength;
         this.bufferCount = 0;
+        const that = this;
+        this.on('pipe', function(from) {
+            that.log.trace('pipe from %s', from.constructor.name);
+        });
+        this.on('unpipe', function(from) {
+            that.log.trace('unpipe from %s', from.constructor.name);
+        });
     }
 
     _transform(data, encoding, afterTransform) {
@@ -849,30 +872,20 @@ class Connection extends Stream.Duplex {
         this.remoteAddress = toAGW.theirCall;
         this._pushable = false;
         this._closed = false;
+        const that = this;
         this.on('pipe', function(from) {
-            this.log.trace('pipe from %s', from.constructor.name);
+            that.log.trace('pipe from %s', from.constructor.name);
         });
         this.on('unpipe', function(from) {
-            this.log.trace('unpipe from %s', from.constructor.name);
+            that.log.trace('unpipe from %s', from.constructor.name);
         });
-    }
-
-    emitClose() {
-        // The documentation seems to say this.destroy() should emit
-        // 'end' and 'close', but I find that doesn't always happen.
-        // This works reliably:
-        if (!this._closed) {
-            this._closed = true;
-            this.emit('end');
-            this.emit('close');
-        }
     }
 
     onFrameFromAGW(frame) {
         this.log.trace('received %s frame', frame.dataKind);
         switch(frame.dataKind) {
         case 'd': // disconnect
-            this.end();
+            this.destroy();
             break;
         case 'D': // data
             if (this._closed) {
@@ -900,6 +913,20 @@ class Connection extends Stream.Duplex {
     _write(data, encoding, afterWrite) {
         this.toAGW.write(data, afterWrite);
     }
+
+    _destroy(err, callback) {
+        // The documentation seems to say this.destroy() should emit
+        // 'end' and 'close', but I find that doesn't always happen.
+        // This works reliably:
+        if (!this._closed) {
+            this._closed = true;
+            this.emit('end');
+            this.emit('close');
+        }
+        this.log.trace('_destroy(%s)', err);
+        if (callback) callback(err);
+    }
+
 } // Connection
 
 /** Similar to net.Server, but for AX.25 connections.
@@ -1063,3 +1090,8 @@ exports.fromHeader = fromHeader;
 exports.getDataSummary = getDataSummary;
 exports.toFrame = toFrame;
 exports.HeaderLength = HeaderLength;
+
+// The following are used by agwpe.js:
+exports.Connection = Connection;
+exports.ConnectionThrottle = ConnectionThrottle;
+exports.DataToFrames = DataToFrames;

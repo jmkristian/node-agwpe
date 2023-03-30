@@ -1,3 +1,10 @@
+/** A 'terminal' style command to communicate via AX.25.
+    A connection to another station is initiated.
+    Subsequently, each line from stdin is transmitted,
+    and received data are written to stdout.
+    A small command language supports sending and
+    receiving files.
+ */
 const Bunyan = require('bunyan');
 const minimist = require('minimist');
 const mockNet = require('./spec/mockNet/mockNet.js');
@@ -7,10 +14,6 @@ const path = require('path');
 const Readline = require('readline');
 const server = require('./server.js');
 const Stream = require('stream');
-
-/* TODO:
-Rename this program to 'converse'.
-*/
 
 [ // Close abruptly when bad signals happen:
     // 'SIGBREAK', // Windows Ctrl+Break
@@ -54,9 +57,10 @@ const agwLog = Bunyan.createLogger({
 const args = minimist(process.argv.slice(2));
 const localAddress = args._[0];
 const remoteAddress = args._[1];
-const remoteEOL = args.eol || '\r';
+const charset = args.encoding || 'utf-8';
 const ESC = args.esc || '\x1D'; // Ctrl+]
 const ID = args.id;
+const remoteEOL = args.eol || '\r';
 const via = Array.isArray(args.via) ? args.via.join(' ') : args.via;
 const EOLPattern = new RegExp(remoteEOL, 'g');
 
@@ -65,6 +69,7 @@ if (!(localAddress && remoteAddress)) {
           + ' ' + path.basename(process.argv[1]);
     process.stderr.write([
         `usage: ${myName} [options] localCallSign remoteCallSign`,
+        `--encoding <string>: encoding of characters to & from bytes. default: utf-8`,
         `--eol <string>: represents end-of-line to the remote station. default: CR`,
         `--esc <character>: switch from conversation to command mode. default: Ctrl+]`,
         // TODO:
@@ -187,7 +192,7 @@ throttle.write({
 
 const watcher = new Stream.Transform({
     transform: function(chunk, encoding, callback) {
-        const data = chunk.toString('utf-8');
+        const data = chunk.toString(charset);
         const b = data.indexOf(ESC);
         if (b < 0) {
             if (log.trace()) log.trace('watcher push ' + JSON.stringify(data));
@@ -197,7 +202,7 @@ const watcher = new Stream.Transform({
             this.emit('break');
             const d = data.substring(0, b) + data.substring(b + ESC.length);
             if (log.trace()) log.trace('watcher push ' + JSON.stringify(d));
-            this.push(d, 'utf-8');
+            this.push(d, charset);
         }
         if (callback) callback();
     },
@@ -226,7 +231,7 @@ user.on('line', function(line) {
     if (conversing) {
         const data = line.replace(/\r?\n/g, remoteEOL);
         log.debug('transmit %s', JSON.stringify(data));
-        connection.write(data + remoteEOL, 'utf-8');
+        connection.write(data + remoteEOL, charset);
     } else { // command mode
         switch (line.trim().split(/\s+/)[0].toLowerCase()) {
         case '':
@@ -269,5 +274,5 @@ if (process.stdin.setRawMode) {
 process.stdin.pipe(watcher).pipe(user);
 connection.on('data', function(data) {
     log.debug('received %s', JSON.stringify(data));
-    process.stdout.write(data.toString('utf-8').replace(EOLPattern, OS.EOL));
+    process.stdout.write(data.toString(charset).replace(EOLPattern, OS.EOL));
 });
