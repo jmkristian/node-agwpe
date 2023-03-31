@@ -1091,7 +1091,7 @@ exports.getDataSummary = getDataSummary;
 exports.toFrame = toFrame;
 exports.HeaderLength = HeaderLength;
 
-// The following are used by agwpe.js:
+// The following are used by converse.js:
 exports.Connection = Connection;
 exports.ConnectionThrottle = ConnectionThrottle;
 exports.DataToFrames = DataToFrames;

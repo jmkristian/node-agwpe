@@ -45,21 +45,26 @@ const log = Bunyan.createLogger({
         stream: logStream,
     }],
 });
-const agwLog = Bunyan.createLogger({
-    name: 'client',
-    level: Bunyan.WARN,
-    streams: [{
-        type: "raw",
-        stream: logStream,
-    }],
-});
+const agwOptions = {
+    logger: Bunyan.createLogger({
+        name: 'client',
+        level: Bunyan.WARN,
+        streams: [{
+            type: "raw",
+            stream: logStream,
+        }],
+    }),
+};
 
 const args = minimist(process.argv.slice(2));
 const localAddress = args._[0];
 const remoteAddress = args._[1];
 const charset = args.encoding || 'utf-8';
 const ESC = args.esc || '\x1D'; // Ctrl+]
+const host = args.host || '127.0.0.1'; // localhost, IPv4
 const ID = args.id;
+const localPort = parseInt(args['local-port'] || args.localport || '0');
+const port = parseInt(args.p || args.port || '8000');
 const remoteEOL = args.eol || '\r';
 const via = Array.isArray(args.via) ? args.via.join(' ') : args.via;
 
@@ -71,10 +76,13 @@ if (!(localAddress && remoteAddress)) {
     const myName = path.basename(process.argv[0])
           + ' ' + path.basename(process.argv[1]);
     process.stderr.write([
-        `usage: ${myName} [options] localCallSign remoteCallSign`,
-        `--encoding <string>: encoding of characters to & from bytes. default: utf-8`,
+        `usage: ${myName} [options] <local call sign> <remote call sign>`,
+        `--encoding <string>: encoding of characters to and from bytes. default: utf-8`,
         `--eol <string>: represents end-of-line to the remote station. default: CR`,
         `--esc <character>: switch from conversation to command mode. default: Ctrl+]`,
+        `--host <address>: TCP host of the TNC. default: 127.0.0.1`,
+        `--port N: TCP port of the TNC. default: 8000`,
+        `--local-port N: AGWPE port. default: 0`,
         // TODO:
         // --id <call sign> FCC call sign (for use with tactical call)
         // --via <digipeater> (may be repeated)
@@ -82,7 +90,11 @@ if (!(localAddress && remoteAddress)) {
     ].join(OS.EOL));
     process.exit(1);
 }
-log.debug('%j', {localAddress: localAddress, remoteAddress: remoteAddress});
+log.debug('%j', {
+    localPort: localPort,
+    localAddress: localAddress,
+    remoteAddress: remoteAddress,
+});
 
 /** Convert control characters to 'Ctrl+X format. */
 function controlify(from) {
@@ -103,26 +115,26 @@ function controlify(from) {
     return into;
 }
 
-const receiver = new server.Reader({logger: agwLog});
-const sender = new server.Writer({logger: agwLog});
+const receiver = new server.Reader(agwOptions);
+const sender = new server.Writer(agwOptions);
 const socket = Net.createConnection({
-    host: '127.0.0.1',
-    port: 8000,
+    host: host,
+    port: port,
     connectListener: function() {
         log.info('Connected to ${remoteAddress}');
     },
 });
-const throttle = new server.ConnectionThrottle({logger: agwLog}, {
-    port: 0,
+const throttle = new server.ConnectionThrottle(agwOptions, {
+    port: localPort,
     callTo: localAddress,
     callFrom: remoteAddress,
 });
-const dataToFrames = new server.DataToFrames({logger: agwLog}, {
-    port: 0,
+const dataToFrames = new server.DataToFrames(agwOptions, {
+    port: localPort,
     callTo: localAddress,
     callFrom: remoteAddress,
 });
-const connection = new server.Connection(dataToFrames, {logger: agwLog});
+const connection = new server.Connection(dataToFrames, agwOptions);
 [socket, sender, receiver, throttle, dataToFrames, connection].forEach(function(emitter) {
     ['error', 'timeout'].forEach(function(event) {
         emitter.on(event, function(err) {
@@ -156,29 +168,54 @@ dataToFrames.pipe(throttle).pipe(sender).pipe(socket);
 throttle.emitFrameFromAGW = function(frame) {
     connection.onFrameFromAGW(frame);
 };
+var availablePorts = '';
 receiver.emitFrameFromAGW = function(frame) {
+    switch(frame.dataKind) {
+    case 'G':
+        log.trace('spy < %s', frame.dataKind);
+        availablePorts = frame.data.toString(charset);
+        break;
+    case 'X':
+        log.trace('spy < %s', frame.dataKind);
+        if (!(frame.data && frame.data.toString('binary') == '\x01')) {
+            try {
+                const err = new Error(`There is no local port ${frame.port}.`);
+                err.code = 'ENOENT';
+                log.error(err);
+                const parts = availablePorts.split(';');
+                const lines = ['Available local ports are:'];
+                const portCount = parseInt(parts[0]);
+                for (var p = 0; p < portCount; ++p) {
+                    var description = parts[p + 1];
+                    var sp = description.match(/\s+/);
+                    if (sp) description = description.substring(sp.index + sp[0].length);
+                    lines.push(p + ': ' + description);
+                }
+                process.stderr.write(lines.join(OS.EOL) + OS.EOL);
+            } catch(err) {
+                log.error(err);
+            }
+            connection.destroy();
+        }
+        break;
+    default:
+    }
     throttle.onFrameFromAGW(frame);
 };
 socket.pipe(receiver);
 
 throttle.write({dataKind: 'G'}); // ask about ports
 throttle.write({
-    port: 0,
+    port: localPort,
     dataKind: 'X', // register call sign
     callFrom: localAddress,
 });
 throttle.write({
-    port: 0,
+    port: localPort,
     dataKind: 'C', // connect
     callFrom: localAddress,
     callTo: remoteAddress,
 });
-/*
-        dataToFrames.on('data', function(info) {
-            log.trace('dataToFrames emitted data(%s)', getFrameSummary(info));
-            throttle.write(info);
-        });
-*/
 
 class Readline extends Stream.Transform {
     constructor(raw) {
@@ -289,7 +326,7 @@ function disconnectGracefully(signal) {
     });
 });
 
-const prompt = 'command> ';
+const prompt = 'cmd:';
 var conversing = true;
 if (conversing) {
     console.log(`Type ${controlify(ESC)} to enter command mode.`);
@@ -331,8 +368,9 @@ user.on('line', function(line) {
                 'Available commands are:',
                 'B: disconnect from the remote station',
                 'C: converse with the remote station',
-                'R <file name>: receive a file from the remote station and disconnect',
-                'S <file name>: send a file to the remote station',
+                // TODO:
+                // 'R <file name>: receive a file from the remote station and disconnect',
+                // 'S <file name>: send a file to the remote station',
                 '',
             ].forEach(function(line) {console.log(line);});
             break;
