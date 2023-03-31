@@ -63,8 +63,8 @@ const charset = args.encoding || 'utf-8';
 const ESC = args.esc || '\x1D'; // Ctrl+]
 const host = args.host || '127.0.0.1'; // localhost, IPv4
 const ID = args.id;
-const localPort = parseInt(args['local-port'] || args.localport || '0');
-const port = parseInt(args.p || args.port || '8000');
+const localPort = args['tnc-port'] || args.tncport || 0;
+const port = args.port || args.p || 8000;
 const remoteEOL = args.eol || '\r';
 const via = Array.isArray(args.via) ? args.via.join(' ') : args.via;
 
@@ -72,17 +72,17 @@ const BS = '\x08';
 const DEL = '\x7F';
 const EOLPattern = new RegExp(remoteEOL, 'g');
 
-if (!(localAddress && remoteAddress)) {
+if (!(localAddress && remoteAddress) || localPort < 0 || localPort > 255) {
     const myName = path.basename(process.argv[0])
           + ' ' + path.basename(process.argv[1]);
     process.stderr.write([
         `usage: ${myName} [options] <local call sign> <remote call sign>`,
+        `--host <address>: TCP host of the TNC. default: 127.0.0.1`,
+        `--port N: TCP port of the TNC. default: 8000`,
+        `--tnc-port N: TNC port (sound card number). range 0-255. default: 0`,
         `--encoding <string>: encoding of characters to and from bytes. default: utf-8`,
         `--eol <string>: represents end-of-line to the remote station. default: CR`,
         `--esc <character>: switch from conversation to command mode. default: Ctrl+]`,
-        `--host <address>: TCP host of the TNC. default: 127.0.0.1`,
-        `--port N: TCP port of the TNC. default: 8000`,
-        `--local-port N: AGWPE port. default: 0`,
         // TODO:
         // --id <call sign> FCC call sign (for use with tactical call)
         // --via <digipeater> (may be repeated)
@@ -179,11 +179,11 @@ receiver.emitFrameFromAGW = function(frame) {
         log.trace('spy < %s', frame.dataKind);
         if (!(frame.data && frame.data.toString('binary') == '\x01')) {
             try {
-                const err = new Error(`There is no local port ${frame.port}.`);
+                const err = new Error(`There is no TNC port ${frame.port}.`);
                 err.code = 'ENOENT';
                 log.error(err);
                 const parts = availablePorts.split(';');
-                const lines = ['Available local ports are:'];
+                const lines = ['Available TNC ports are:'];
                 const portCount = parseInt(parts[0]);
                 for (var p = 0; p < portCount; ++p) {
                     var description = parts[p + 1];
