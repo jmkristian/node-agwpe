@@ -11,9 +11,9 @@ const mockNet = require('./spec/mockNet/mockNet.js');
 const Net = require('net');
 const OS = require('os');
 const path = require('path');
-const Readline = require('readline');
 const server = require('./server.js');
 const Stream = require('stream');
+const TTY = require('tty');
 
 [ // Close abruptly when bad signals happen:
     // 'SIGBREAK', // Windows Ctrl+Break
@@ -62,6 +62,9 @@ const ESC = args.esc || '\x1D'; // Ctrl+]
 const ID = args.id;
 const remoteEOL = args.eol || '\r';
 const via = Array.isArray(args.via) ? args.via.join(' ') : args.via;
+
+const BS = '\x08';
+const DEL = '\x7F';
 const EOLPattern = new RegExp(remoteEOL, 'g');
 
 if (!(localAddress && remoteAddress)) {
@@ -129,7 +132,7 @@ const connection = new server.Connection(dataToFrames, {logger: agwLog});
     });
 });
 socket.on('close', function(info) {
-    log.debug('socket emitted close(%s)', info || '');
+    log.trace('socket emitted close(%s)', info || '');
     connection.destroy();
 });
 connection.on('close', function(info) {
@@ -176,74 +179,146 @@ throttle.write({
             throttle.write(info);
         });
 */
+
+class Readline extends Stream.Transform {
+    constructor(raw) {
+        super({defaultEncoding: charset});
+        this.buffer = '';
+        this.cursor = 0;
+        const that = this;
+        this.on('pipe', function(from) {
+            this.raw = false;
+            try {
+                if (from.isTTY) {
+                    from.setRawMode(true);
+                    this.raw = true;
+                }
+            } catch(err) {
+                log.warn(err);
+            }
+        });
+    }
+    _transform(chunk, encoding, callback) {
+        var data = chunk.toString(charset);
+        for (var kill; (kill = data.indexOf('\x03')) >= 0; ) {
+            log.trace('Readline emit SIGINT');
+            this.emit('SIGINT');
+            data = data.substring(0, kill) + data.substring(kill + 1);
+        }
+        for (var esc; (esc = data.indexOf(ESC)) >= 0; ) {
+            log.trace('Readline emit break');
+            this.emit('break');
+            this.buffer = data = '';
+            this.cursor = 0;
+            // data = data.substring(0, esc) + data.substring(esc + ESC.length);
+        }
+        this.buffer += data;
+        for (var eol; eol = this.buffer.match(/[\r\n]/); ) {
+            eol = eol.index;
+            var skipLF = this.foundCR && this.buffer.charAt(eol) == '\n';
+            this.foundCR = false;
+            if (!skipLF) {
+                var line = this.buffer.substring(0, eol);
+                if (this.raw) {
+                    var echo = (line + OS.EOL).substring(this.cursor);
+                    log.trace('Readline push %j', echo);
+                    this.push(echo);
+                }
+                log.trace('Readline emit line %s', line);
+                this.emit('line', line); 
+                this.cursor = 0;
+                if (this.buffer.charAt(eol) == '\r') {
+                    this.foundCR = true;
+                }
+            }
+            this.buffer = this.buffer.substring(eol + 1);
+        }
+        if (this.raw) {
+            while (this.buffer.endsWith(BS) || this.buffer.endsWith(DEL)) {
+                this.buffer = this.buffer.substring(0, this.buffer.length - BS.length - 1);
+            }
+            if (this.cursor < this.buffer.length) {
+                this.push(this.buffer.substring(this.cursor));
+                this.cursor = this.buffer.length;
+            } else {
+                while (this.cursor > this.buffer.length) {
+                    this.push(BS + ' ' + BS);
+                    --this.cursor;
+                }
+            }
+        }
+        if (callback) callback();
+    }
+    _flush(callback) {
+        if (this.buffer) {
+            this.emit('line', this.buffer);
+            this.buffer = '';
+        }
+        if (callback) callback();
+    }
+}
+
+const user = new Readline();
+process.stdin.pipe(user).pipe(process.stdout);
+
+function disconnectGracefully(signal) {
+    log.info('%s disconnecting...', signal);
+    connection.destroy();
+    setTimeout(function() {
+        socket.destroy();
+        process.exit(3);
+    }, 3000);
+}
 [ // Close gracefully:
     'SIGHUP', // disconnected or console window closed
     'SIGINT', // Ctrl+C
 ].forEach(function(signal) {
-    process.on(signal, function(s) {
-        log.info('%s disconnecting...', signal);
+    process.on(signal, function(info) {
+        log.debug('process received %s(%s)', signal, info || '');
+        disconnectGracefully(signal);
+    });
+    user.on(signal, function(info) {
+        log.debug('user emitted %s(%s)', signal, info || '');
+        disconnectGracefully(signal);
+    });
+});
+['finish', 'end', 'close'].forEach(function(event) {
+    user.on(event, function(info) {
+        log.trace('user emitted %s(%s)', event, info || '');
         connection.destroy();
-        setTimeout(function() {
-            socket.destroy();
-            process.exit(3);
-        }, 3000);
     });
 });
 
-const watcher = new Stream.Transform({
-    transform: function(chunk, encoding, callback) {
-        const data = chunk.toString(charset);
-        const b = data.indexOf(ESC);
-        if (b < 0) {
-            if (log.trace()) log.trace('watcher push ' + JSON.stringify(data));
-            this.push(chunk, encoding);
-        } else {
-            log.trace('watcher emit break');
-            this.emit('break');
-            const d = data.substring(0, b) + data.substring(b + ESC.length);
-            if (log.trace()) log.trace('watcher push ' + JSON.stringify(d));
-            this.push(d, charset);
-        }
-        if (callback) callback();
-    },
-});
-const user = Readline.createInterface({
-    input: watcher,
-    output: process.stdout,
-    prompt: '',
-});
 const prompt = 'command> ';
 var conversing = true;
 if (conversing) {
     console.log(`Type ${controlify(ESC)} to enter command mode.`);
 } else {
-    process.stdout.write(prompt);
+    user.push(prompt);
 }
-watcher.on('break', function() {
-    conversing = false;
-    process.stdout.write(OS.EOL + prompt);
-});
-user.on('close', function(err) {
-    connection.destroy();
+user.on('break', function() {
+    if (conversing) {
+        conversing = false;
+        user.push(OS.EOL + prompt);
+    }
 });
 user.on('line', function(line) {
     if (log.debug()) log.debug('user line ' + JSON.stringify(line));
     if (conversing) {
-        const data = line.replace(/\r?\n/g, remoteEOL);
-        log.debug('transmit %s', JSON.stringify(data));
-        connection.write(data + remoteEOL, charset);
+        log.debug('transmit %s', JSON.stringify(line));
+        connection.write(line + remoteEOL, charset);
     } else { // command mode
         switch (line.trim().split(/\s+/)[0].toLowerCase()) {
         case '':
             break;
         case 'b': // disconnect
             connection.destroy();
-            user.close();
+            user.destroy();
             return;
         case 'c': // converse
             console.log(`Type ${controlify(ESC)} to return to command mode.`)
             conversing = true;
-            break;
+            return;
         case 'r': // receive a file
             console.log(`receive a file...`);
             break;
@@ -263,15 +338,11 @@ user.on('line', function(line) {
             break;
         default:
             console.log(`${line}?`);
-            console.log(`Type 'H' to see a list of commands.`);
+            console.log(`Type H to see a list of commands.`);
         }
-        if (!conversing) process.stdout.write(prompt);
+        user.push(prompt);
     }
 });
-if (process.stdin.setRawMode) {
-    process.stdin.setRawMode(true);
-}
-process.stdin.pipe(watcher).pipe(user);
 connection.on('data', function(data) {
     log.debug('received %s', JSON.stringify(data));
     process.stdout.write(data.toString(charset).replace(EOLPattern, OS.EOL));
