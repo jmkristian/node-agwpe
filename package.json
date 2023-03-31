@@ -6,7 +6,9 @@
   "engines": {
     "node": ">=8.17.0"
   },
-  "dependencies": {},
+  "dependencies": {
+    "minimist": "^1.2.8"
+  },
   "scripts": {
     "test": "node ./checknode.js && jasmine"
   },
