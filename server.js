@@ -508,11 +508,10 @@ class Throttle extends Stream.Transform {
         super({
             readableObjectMode: true,
             readableHighWaterMark: 1,
-            // The readableHighWaterMark is small to help
-            // maintain an accurate value of this.inFlight.
-            // We don't want to receive an update and set
-            // inFlight = 0 when in fact there are multiple
-            // frames in the read buffer, soon to be sent.
+            // The readableHighWaterMark is small to help maintain an accurate
+            // value of this.inFlight.  We don't want to receive an update and
+            // set inFlight = 0 when in fact there are multiple frames in the
+            // transform output buffer, soon to be sent.
             writableObjectMode: true,
             writableHighWaterMark: 5,
         });
@@ -602,12 +601,12 @@ class Throttle extends Stream.Transform {
     }
 
     _transform(frame, encoding, callback) {
+        var err = undefined;
         if (this.inFlight >= MaxFramesInFlight) {
             // Don't send it now.
             if (this.buffer) {
-                var err = newError('already have a buffer');
+                err = newError('already have a buffer');
                 this.log.debug(err);
-                this.emit('error', err);
             } else {
                 this.buffer = {frame: frame};
                 if (this.log.trace()) {
@@ -625,7 +624,7 @@ class Throttle extends Stream.Transform {
                 }
             }
         }
-        callback();
+        callback(err);
     }
 
     _flush(callback) {
