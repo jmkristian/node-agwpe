@@ -11,6 +11,7 @@ const OS = require('os');
 const path = require('path');
 const server = require('./server.js');
 const Stream = require('stream');
+const newError = server.newError;
 
 [ // Close abruptly when bad signals happen:
     'SIGBUS', 'SIGFPE', 'SIGSEGV', 'SIGILL',
@@ -111,6 +112,7 @@ const connection = client.createConnection({
     logger: agwLogger,
 }, function connectListener(info) {
     console.log(messageFromAGW(info) || `Connected to ${remoteAddress}`);
+    console.log(`Type ${controlify(ESC)} to enter command mode.${OS.EOL}`);
 });
 ['error', 'timeout'].forEach(function(event) {
     connection.on(event, function(err) {
@@ -134,21 +136,20 @@ function disconnectGracefully(signal) {
 }
 
 var availablePorts = '';
-connection.on('receivedFrame', function(frame) {
+connection.on('frameReceived', function(frame) {
     switch(frame.dataKind) {
     case 'G':
-        log.trace('receivedFrame %s', frame.dataKind);
+        log.debug('frameReceived G');
         availablePorts = frame.data.toString(charset);
         break;
     case 'X':
-        log.trace('receivedFrame < %s', frame.dataKind);
+        log.debug('frameReceived %j', frame);
         if (!(frame.data && frame.data.toString('binary') == '\x01')) {
             try {
-                const err = new Error(`There is no TNC port ${frame.port}.`);
-                err.code = 'ENOENT';
-                log.error(err);
+                const message = `There is no TNC port ${frame.port}.`;
+                // log.debug(newError(message, 'ENOENT'));
                 const parts = availablePorts.split(';');
-                const lines = ['Available TNC ports are:'];
+                const lines = [message + ' Available TNC ports are:'];
                 const portCount = parseInt(parts[0]);
                 for (var p = 0; p < portCount; ++p) {
                     var description = parts[p + 1];
@@ -160,12 +161,11 @@ connection.on('receivedFrame', function(frame) {
             } catch(err) {
                 log.error(err);
             }
-            disconnectGracefully();
+            connection.destroy();
         }
         break;
     default:
     }
-    throttle.onFrameFromAGW(frame);
 });
 
 /** Handle input from stdin. When conversing, pipe it (to a connection).
@@ -187,9 +187,7 @@ class Interpreter extends Stream.Transform {
         this.buffer = '';
         this.cursor = 0;
         this.conversing = true;
-        if (this.conversing) {
-            this.output(`Type ${controlify(ESC)} to enter command mode.${OS.EOL}`);
-        } else {
+        if (!this.conversing) {
             this.output(prompt);
         }
         this.on('pipe', function(from) {

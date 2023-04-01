@@ -1106,3 +1106,4 @@ exports.Connection = Connection;
 exports.ConnectionThrottle = ConnectionThrottle;
 exports.FrameAssembler = FrameAssembler;
 exports.LogNothing = LogNothing;
+exports.newError = newError;
