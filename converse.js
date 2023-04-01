@@ -21,12 +21,12 @@ const newError = server.newError;
 
 const logStream = bunyanFormat({outputMode: 'short', color: false}, process.stderr);
 const log = Bunyan.createLogger({
-    name: 'converse',
+    name: 'Converse',
     level: Bunyan.INFO,
     stream: logStream,
 });
 const agwLogger = Bunyan.createLogger({
-    name: 'AGWPE',
+    name: 'TNC',
     level: Bunyan.WARN,
     stream: logStream,
 });
@@ -43,6 +43,7 @@ const charset = args.encoding || 'utf-8';
 const ESC = args.esc || '\x1D'; // Ctrl+]
 const host = args.host || '127.0.0.1'; // localhost, IPv4
 const ID = args.id;
+const KILL = args.kill || '\x1C'; // FS, or Windows Ctrl+Break
 const localPort = args['tnc-port'] || args.tncport || 0;
 const port = args.port || args.p || 8000;
 const remoteEOL = args.eol || '\r';
@@ -106,8 +107,8 @@ function messageFromAGW(info) {
 const connection = client.createConnection({
     host: host,
     port: port,
-    remoteAddress: remoteAddress,
-    localAddress: localAddress,
+    remoteAddress: remoteAddress.toUpperCase(),
+    localAddress: localAddress.toUpperCase(),
     localPort: localPort,
     logger: agwLogger,
 }, function connectListener(info) {
@@ -214,6 +215,10 @@ class Interpreter extends Stream.Transform {
             this.cursor = 0;
         }
         this.buffer += data;
+        if (this.buffer.indexOf(KILL) >= 0) {
+            setTimeout(process.exit, 10);
+            this.buffer = this.buffer.replace(new RegExp(KILL, 'g'), '')
+        }
         for (var eol; eol = this.buffer.match(/[\r\n]/); ) {
             eol = eol.index;
             var skipLF = this.foundCR && this.buffer.charAt(eol) == '\n';
@@ -272,7 +277,7 @@ class Interpreter extends Stream.Transform {
         }
     }
     onLine(line) {
-        if (this.log.trace()) this.log.trace('input line ' + JSON.stringify(line));
+        this.log.trace('input line %j', line);
         if (this.conversing) {
             this.output(line + remoteEOL);
         } else { // command mode
@@ -286,7 +291,7 @@ class Interpreter extends Stream.Transform {
                 connection.end();
                 return;
             case 'c': // converse
-                this.output(`Type ${controlify(ESC)} to return to command mode.${OS.EOL}`)
+                console.log(`Type ${controlify(ESC)} to return to command mode.${OS.EOL}`)
                 this.conversing = true;
                 return;
             case 'r': // receive a file
