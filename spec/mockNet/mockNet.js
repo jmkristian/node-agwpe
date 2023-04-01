@@ -1,4 +1,5 @@
 const Bunyan = require('bunyan');
+const bunyanFormat = require('bunyan-format');
 const Stream = require('stream');
 /*
 const AGWPE = require('../../server.js');
@@ -10,21 +11,11 @@ const ECONNREFUSED = 'ECONNREFUSED';
 const ETIMEDOUT = 'ETIMEDOUT';
 const HappyPorts = '2;Port1 stub;Port2 stub';
 
-const logStream = new Stream();
 const log = Bunyan.createLogger({
     name: 'ServerSpec',
     level: Bunyan.INFO,
-    streams: [{
-        type: "raw",
-        stream: logStream,
-    }],
+    stream: bunyanFormat({outputMode: 'short', color: false}, process.stderr),
 });
-logStream.writable = true;
-logStream.write = function(item) {
-    var c = item['class'];
-    c = c ? c + ' ' : '';
-    console.log(`${item.level}: ${c}${item.msg}`);
-}
 const LogNothing = Bunyan.createLogger({
     name: 'ServerSpec',
     level: Bunyan.FATAL + 100,

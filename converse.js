@@ -4,6 +4,7 @@
     stdout. A command mode enables sending and receiving files.
  */
 const Bunyan = require('bunyan');
+const bunyanFormat = require('bunyan-format');
 const client = require('./client.js');
 const minimist = require('minimist');
 const OS = require('os');
@@ -17,31 +18,16 @@ const Stream = require('stream');
     process.on(signal, process.exit); // immediately
 });
 
-const logStream = new Stream.Writable({
-    objectMode: true,
-    write: function(item, encoding, callback) {
-        var c = item['class'];
-        c = c ? c + ' ' : '';
-        process.stderr.write(
-            `${item.level}: ${c}${item.msg}${OS.EOL}`,
-            'utf-8', callback);
-    },
-});
+const logStream = bunyanFormat({outputMode: 'short', color: false}, process.stderr);
 const log = Bunyan.createLogger({
-    name: 'client',
-    level: Bunyan.DEBUG,
-    streams: [{
-        type: "raw",
-        stream: logStream,
-    }],
+    name: 'converse',
+    level: Bunyan.INFO,
+    stream: logStream,
 });
 const agwLogger = Bunyan.createLogger({
-    name: 'client',
-    level: Bunyan.TRACE,
-    streams: [{
-        type: "raw",
-        stream: logStream,
-    }],
+    name: 'AGWPE',
+    level: Bunyan.WARN,
+    stream: logStream,
 });
 ['error', 'timeout'].forEach(function(event) {
     logStream.on(event, function(err) {
@@ -134,14 +120,15 @@ const connection = client.createConnection({
 connection.on('close', function(info) {
     log.debug('connection emitted close(%j)', info || '')
     console.log(messageFromAGW(info) || `Disconnected from ${remoteAddress}`);
-    setTimeout(process.exit, 100);
+    setTimeout(process.exit, 10);
 });
 
 function disconnectGracefully(signal) {
     console.log('Disconnecting ...' + (signal ? ` (${signal})` : ''));
     connection.end(); // should cause a 'close' event, eventually.
+    // But in case it doesn't:
     setTimeout(function() {
-        log.error(`connection didn't close.`);
+        log.error(`Connection didn't close.`);
         process.exit(3);
     }, 10000);
 }
