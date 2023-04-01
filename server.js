@@ -1091,7 +1091,8 @@ exports.getDataSummary = getDataSummary;
 exports.toFrame = toFrame;
 exports.HeaderLength = HeaderLength;
 
-// The following are used by converse.js:
+// The following are used by client.js or converse.js:
 exports.Connection = Connection;
 exports.ConnectionThrottle = ConnectionThrottle;
 exports.DataToFrames = DataToFrames;
+exports.LogNothing = LogNothing;

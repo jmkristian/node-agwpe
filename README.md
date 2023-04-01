@@ -6,16 +6,38 @@ using an AGWPE-compatible TNC (e.g.
 [SoundModem](http://uz7.ho.ua/packetradio.htm) or
 [AGWPE](https://www.sv2agw.com/downloads/)).
 
+Connect to another station:
+```js
+const AGWPE = require('@jmkristian/node-agwpe');
+
+var connected = false;
+const connection = AGWPE.createConnection ({
+    remoteAddress: 'their call sign',
+    localAddress: 'your call sign',
+    localPort: 0, // TNC port (sound card). default: 0
+    host: 'TNC-server-host', // TNC's TCP host. default: 127.0.0.1
+    port: 8000, // TNC's TCP port. default: 8000
+}, function connectListener() {
+    connected = true;
+});
+connection.on('error', function(err) {console.log('Uh oh! ' + err);})
+if (connected) {
+    connection.write(...); // transmit data
+    connection.pipe(...); // receive data
+}
+```
+
+Wait for incoming connections:
 ```js
 const AGWPE = require('@jmkristian/node-agwpe');
 const Bunyan = require('bunyan');
 
 var server = new AGWPE.Server ({
-    host: 'agwpe-server-host', // AGWPE's host. default: localhost
-    port: 8000, // AGWPE's port. default: 8000
+    host: 'tnc-server-host', // TNC's TCP host. default: 127.0.0.1
+    port: 8000, // TNC's TCP port. default: 8000
     frameLength: 128, /* default: 128
-        The maximum number of bytes to transmit to AGWPE in one data frame.
-        The effect of frameLength varies, depending on the AGWPE TNC.
+        The maximum number of bytes to transmit to the TNC in one data frame.
+        The effect of frameLength varies, depending on the TNC.
         SoundModem by UZ7HO transmits a long data frame as one long packet.
         Direwolf breaks up a long frame into packets of PACLEN bytes each.
         Large values may not work at all; for example Direwolf v1.7a will
@@ -32,9 +54,9 @@ server.on('connection', function(connection) {
 });
 server.listen({
         host: ['A1CALL-1', 'B2CALL-10'], // This server's call signs.
-        port: [0, 1], // AGWPE ports to listen to. Default: all ports
+        port: [0, 1], // TNC ports to listen to. Default: all ports
     },
     function onListening(info) { // called when the server begins listening
-        console.log('AGWPE listening %o', info);
+        console.log('TNC listening %o', info);
     });
 ```

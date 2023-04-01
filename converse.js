@@ -6,14 +6,12 @@
     receiving files.
  */
 const Bunyan = require('bunyan');
+const client = require('./client.js');
 const minimist = require('minimist');
-const mockNet = require('./spec/mockNet/mockNet.js');
-const Net = require('net');
 const OS = require('os');
 const path = require('path');
 const server = require('./server.js');
 const Stream = require('stream');
-const TTY = require('tty');
 
 [ // Close abruptly when bad signals happen:
     // 'SIGBREAK', // Windows Ctrl+Break
@@ -45,16 +43,14 @@ const log = Bunyan.createLogger({
         stream: logStream,
     }],
 });
-const agwOptions = {
-    logger: Bunyan.createLogger({
-        name: 'client',
-        level: Bunyan.WARN,
-        streams: [{
-            type: "raw",
-            stream: logStream,
-        }],
-    }),
-};
+const agwLogger = Bunyan.createLogger({
+    name: 'client',
+    level: Bunyan.WARN,
+    streams: [{
+        type: "raw",
+        stream: logStream,
+    }],
+});
 
 const args = minimist(process.argv.slice(2));
 const localAddress = args._[0];
@@ -115,61 +111,22 @@ function controlify(from) {
     return into;
 }
 
-const receiver = new server.Reader(agwOptions);
-const sender = new server.Writer(agwOptions);
-const socket = Net.createConnection({
+const connection = client.createConnection({
     host: host,
     port: port,
-    connectListener: function() {
-        log.info('Connected to ${remoteAddress}');
-    },
+    remoteAddress: remoteAddress,
+    localAddress: localAddress,
+    localPort: localPort,
+    logger: agwLogger,
 });
-const throttle = new server.ConnectionThrottle(agwOptions, {
-    port: localPort,
-    callTo: localAddress,
-    callFrom: remoteAddress,
-});
-const dataToFrames = new server.DataToFrames(agwOptions, {
-    port: localPort,
-    callTo: localAddress,
-    callFrom: remoteAddress,
-});
-const connection = new server.Connection(dataToFrames, agwOptions);
-[socket, sender, receiver, throttle, dataToFrames, connection].forEach(function(emitter) {
-    ['error', 'timeout'].forEach(function(event) {
-        emitter.on(event, function(err) {
-            log.warn('%s emitted %s(%s)',
-                     emitter.constructor.name, event, err || '');
-        });
+['error', 'timeout'].forEach(function(event) {
+    connection.on(event, function(err) {
+        log.warn('%s emitted %s(%s)',
+                 connection.constructor.name, event, err || '');
     });
 });
-socket.on('close', function(info) {
-    log.trace('socket emitted close(%s)', info || '');
-    connection.destroy();
-});
-connection.on('close', function(info) {
-    log.trace('connection emitted close(%s)', info || '');
-    dataToFrames.end();
-});
-dataToFrames.on('end', function(info) {
-    log.trace('dataToFrames emitted end(%s)', info || '');
-    throttle.end();
-});
-throttle.on('end', function(info) {
-    log.trace('throttle emitted end(%s)', info || '');
-    sender.end();
-});
-sender.on('end', function(info) {
-    log.trace('sender emitted end(%s)', info || '');
-    socket.destroy();
-    process.exit(info ? 2 : 0);
-});
-dataToFrames.pipe(throttle).pipe(sender).pipe(socket);
-throttle.emitFrameFromAGW = function(frame) {
-    connection.onFrameFromAGW(frame);
-};
 var availablePorts = '';
-receiver.emitFrameFromAGW = function(frame) {
+connection.on('receivedFrame', function(frame) {
     switch(frame.dataKind) {
     case 'G':
         log.trace('spy < %s', frame.dataKind);
@@ -201,20 +158,6 @@ receiver.emitFrameFromAGW = function(frame) {
     default:
     }
     throttle.onFrameFromAGW(frame);
-};
-socket.pipe(receiver);
-
-throttle.write({dataKind: 'G'}); // ask about ports
-throttle.write({
-    port: localPort,
-    dataKind: 'X', // register call sign
-    callFrom: localAddress,
-});
-throttle.write({
-    port: localPort,
-    dataKind: 'C', // connect
-    callFrom: localAddress,
-    callTo: remoteAddress,
 });
 
 class Readline extends Stream.Transform {
@@ -302,9 +245,8 @@ function disconnectGracefully(signal) {
     log.info('%s disconnecting...', signal);
     connection.destroy();
     setTimeout(function() {
-        socket.destroy();
         process.exit(3);
-    }, 3000);
+    }, 2000);
 }
 [ // Close gracefully:
     'SIGHUP', // disconnected or console window closed
@@ -384,4 +326,8 @@ user.on('line', function(line) {
 connection.on('data', function(data) {
     log.debug('received %s', JSON.stringify(data));
     process.stdout.write(data.toString(charset).replace(EOLPattern, OS.EOL));
+});
+connection.on('close', function(info) {
+    log.debug('connection emitted close(%s)', info || '');
+    process.exit();
 });
