@@ -1,14 +1,14 @@
-/** A 'terminal' style command to communicate via AX.25.
-    A connection to another station is initiated.
-    Subsequently, each line from stdin is transmitted,
-    and received data are written to stdout.
-    A small command language supports sending and
-    receiving files.
+/** A command to communicate via AX.25 in 'terminal' style.
+    A connection to another station is initiated. Subsequently, each
+    line from stdin is transmitted, and received data are written to
+    stdout. A small command language supports sending and receiving
+    files.
  */
 const Net = require('net');
 const server = require('./server.js');
 const Stream = require('stream');
 const newError = server.newError;
+
 const charset = 'utf-8';
 
 function createConnection(options, connectListener) {
@@ -21,18 +21,18 @@ function createConnection(options, connectListener) {
         callTo: options.localAddress,
         callFrom: options.remoteAddress,
     };
-    const receiver = new server.Reader(agwOptions);
-    const sender = new server.Writer(agwOptions);
+    const receiver = new server.Receiver(agwOptions);
+    const sender = new server.Sender(agwOptions);
     const throttle = new server.ConnectionThrottle(agwOptions, connectFrame);
-    const dataToFrames = new server.DataToFrames(agwOptions, connectFrame);
-    const connection = new server.Connection(dataToFrames, agwOptions);
+    const assembler = new server.FrameAssembler(agwOptions, connectFrame);
+    const connection = new server.Connection(assembler, agwOptions);
     const socket = Net.createConnection({
         host: options.host || '127.0.0.1',
         port: options.port || 8000,
     },  function() {
-        log.info('Connected to TNC');
+        log.debug('Connected to TNC');
     });
-    [socket, sender, receiver, throttle, dataToFrames].forEach(function(emitter) {
+    [socket, sender, receiver, throttle, assembler].forEach(function(emitter) {
         ['error', 'timeout'].forEach(function(event) {
             emitter.on(event, function(err) {
                 connection.emit(event, err);
@@ -43,31 +43,42 @@ function createConnection(options, connectListener) {
         log.trace('socket emitted close(%s)', info || '');
         connection.destroy();
     });
-    connection.on('close', function(info) {
-        log.trace('connection emitted close(%s)', info || '');
-        dataToFrames.end();
+    connection.on('finish', function(info) {
+        log.trace('connection emitted finish(%s)', info || '');
+        assembler.end();
     });
-    dataToFrames.on('end', function(info) {
-        log.trace('dataToFrames emitted end(%s)', info || '');
+    assembler.on('end', function(info) {
+        log.trace('assembler emitted end(%s)', info || '');
         throttle.end();
     });
     throttle.on('end', function(info) {
         log.trace('throttle emitted end(%s)', info || '');
-        sender.end();
-    });
-    sender.on('end', function(info) {
-        log.trace('sender emitted end(%s)', info || '');
-        socket.destroy();
     });
     throttle.emitFrameFromAGW = function(frame) {
         connection.onFrameFromAGW(frame);
+        if (frame.dataKind == 'C') { // connected
+            if (connectListener) connectListener(frame.data);
+        }
     };
     receiver.emitFrameFromAGW = function(frame) {
-        if (frame) connection.emit('frameReceived', frame);
         throttle.onFrameFromAGW(frame);
+        if (frame) connection.emit('frameReceived', frame);
+        if (frame.dataKind == 'd') { // disconnected
+            socket.destroy();
+        }
     };
-    dataToFrames.pipe(throttle).pipe(sender).pipe(socket);
     socket.pipe(receiver);
+    sender.pipe(socket);
+    assembler.pipe(throttle).pipe(
+        // We want to pipe data from the throttle to the sender, but
+        // we don't want the sender to end when the throttle ends.
+        new Stream.Transform({
+            readableObjectMode: true,
+            writableObjectMode: true,
+            transform: function(chunk, encoding, callback) {
+                sender.write(chunk, encoding, callback);
+            },
+        }));
 
     throttle.write({dataKind: 'G'}); // ask about ports
     throttle.write({
@@ -81,7 +92,6 @@ function createConnection(options, connectListener) {
         callFrom: options.localAddress,
         callTo: options.remoteAddress,
     });
-    if (connectListener) connectListener();
     return connection;
 }
 

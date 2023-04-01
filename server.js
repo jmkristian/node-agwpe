@@ -8,31 +8,31 @@ streams, like this:
      ----------------
        |         ^
        v         |
-   AGWReader AGWWriter
+    Receiver   Sender
        |         ^
        v         |
-  PortRouter     |
-          |      |
-          v      |
-        PortThrottle
-          |      ^
-          v      |
+    PortRouter   |
+            |    |
+            v    |
+         PortThrottle
+            |    ^
+            v    |
 ConnectionRouter |
-          |      |
-          v      |
+            |    |
+            v    |
       ConnectionThrottle
             |    ^
             |    |
-            |  DataToFrames
+            | FrameAssembler
             |    ^
             v    |
           Connection
 
 When an AX.25 connection is disconnected, the Connection
-initiates a sequence of calls to DataToFrames.end() and
+initiates a sequence of calls to FrameAssembler.end() and
 ConnectionThrottle.end(). The sequence is connected by
 events: a 'finish' event from Connection and 'end' events
-from DataToFrames and ConnectionThrottle.
+from FrameAssembler and ConnectionThrottle.
 */
 
 const EventEmitter = require('events');
@@ -194,7 +194,7 @@ function fromHeader(buffer) {
 const EmptyBuffer = Buffer.alloc(0);
 
 /** Transform binary AGWPE frames to objects. */
-class AGWReader extends Stream.Writable {
+class Receiver extends Stream.Writable {
 
     constructor(options) {
         super({
@@ -219,10 +219,10 @@ class AGWReader extends Stream.Writable {
         try {
             this.log.trace('_write %d', chunk.length);
             if (encoding != 'buffer') {
-                throw newError(`AGWReader._write encoding ${encoding}`, 'ERR_INVALID_ARG_VALUE');
+                throw newError(`Receiver._write encoding ${encoding}`, 'ERR_INVALID_ARG_VALUE');
             }
             if (!Buffer.isBuffer(chunk)) {
-                throw newError(`AGWReader._write chunk isn't a Buffer`, 'ERR_INVALID_ARG_TYPE');
+                throw newError(`Receiver._write chunk isn't a Buffer`, 'ERR_INVALID_ARG_TYPE');
             }
             if (this.data) {
                 // We have part of the data. Append the new chunk to it.
@@ -277,10 +277,10 @@ class AGWReader extends Stream.Writable {
             afterTransform(err);
         }
     } // _write
-} // AGWReader
+} // Receiver
 
 /** Transform objects to binary AGWPE frames. */
-class AGWWriter extends Stream.Transform {
+class Sender extends Stream.Transform {
 
     constructor(options) {
         super({
@@ -303,7 +303,7 @@ class AGWWriter extends Stream.Transform {
 
     _transform(chunk, encoding, afterTransform) {
         if ((typeof chunk) != 'object') {
-            afterTransform(newError(`AGWWriter ${chunk}`, 'ERR_INVALID_ARG_TYPE'));
+            afterTransform(newError(`Sender ${chunk}`, 'ERR_INVALID_ARG_TYPE'));
         } else {
             var frame = toFrame(chunk, encoding);
             if (this.log.debug()) {
@@ -313,7 +313,7 @@ class AGWWriter extends Stream.Transform {
             if (afterTransform) afterTransform();
         }
     }
-} // AGWWriter
+} // Sender
 
 /** Creates a client object to handle each connection to an AGW port
     or a remote AX.25 station. Also, passes frames received via each
@@ -450,7 +450,7 @@ class ConnectionRouter extends Router {
         var throttle = new ConnectionThrottle(this.options, frame);
         throttle.pipe(this.toAGW);
         throttle.write(throttle.queryFramesInFlight());
-        var dataToFrames = new DataToFrames(this.options, frame);
+        var dataToFrames = new FrameAssembler(this.options, frame);
         dataToFrames.pipe(throttle);
         var connection = new Connection(dataToFrames, this.options);
         var connectionClass = connection.constructor.name;
@@ -608,10 +608,10 @@ class Throttle extends Stream.Transform {
                 err = newError('already have a buffer');
                 this.log.debug(err);
             } else {
-                this.buffer = {frame: frame};
                 if (this.log.trace()) {
                     this.log.trace('postponed %s', getFrameSummary(frame));
                 }
+                this.buffer = {frame: frame, afterPush: callback};
                 this.pushBuffer();
             }
         } else {
@@ -623,17 +623,17 @@ class Throttle extends Stream.Transform {
                     this.pushFrame(this.queryFramesInFlight());
                 }
             }
+            if (callback) callback();
         }
-        callback(err);
     }
 
     _flush(callback) {
         this.log.trace('_flush');
         var that = this;
-        this.afterFlushed = function afterFlushed() {
-            that.log.trace('afterFlushed');
+        this.afterFlushed = function afterFlush() {
+            that.log.trace('after _flush');
             that.stopPolling();
-            callback();
+            if (callback) callback();
             that.emit('end');
         }
         this.pushBuffer();
@@ -723,7 +723,7 @@ const MaxWriteDelay = 250; // msec
     MaxWriteDelay, while several chunks are combined into one AGW data frame,
     perhaps as long as options.frameLength.
 */
-class DataToFrames extends Stream.Transform {
+class FrameAssembler extends Stream.Transform {
 
     constructor(options, frame) {
         super({
@@ -753,7 +753,7 @@ class DataToFrames extends Stream.Transform {
     _transform(data, encoding, afterTransform) {
         try {
             if (!Buffer.isBuffer(data)) {
-                afterTransform(newError(`DataToFrames._transform ${typeof data}`,
+                afterTransform(newError(`FrameAssembler._transform ${typeof data}`,
                                         'ERR_INVALID_ARG_TYPE'));
                 return;
             }
@@ -844,12 +844,12 @@ class DataToFrames extends Stream.Transform {
                 data: data,
             };
             if (this.log.trace()) {
-                this.log.trace('pushFrame %s', getFrameSummary(frame));
+                this.log.trace('push %s', getFrameSummary(frame));
             }
             this.push(frame);
         }
     }
-} // DataToFrames
+} // FrameAssembler
 
 /** Exchanges bytes between one local call sign and one remote call sign. */
 class Connection extends Stream.Duplex {
@@ -884,6 +884,7 @@ class Connection extends Stream.Duplex {
         this.log.trace('received %s frame', frame.dataKind);
         switch(frame.dataKind) {
         case 'd': // disconnect
+            this.disconnectMessage = frame.data;
             this.destroy();
             break;
         case 'D': // data
@@ -913,16 +914,26 @@ class Connection extends Stream.Duplex {
         this.toAGW.write(data, afterWrite);
     }
 
+    _final(callback) {
+        this.log.trace('_final');
+        if (!this._finished) {
+            this._finished = true;
+            this.emit('finish');
+        }
+        if (callback) callback();
+    }
+
     _destroy(err, callback) {
+        this.log.trace('_destroy(%s)', err || '');
         // The documentation seems to say this.destroy() should emit
         // 'end' and 'close', but I find that doesn't always happen.
         // This works reliably:
+        this._final(); // in case it hasn't already been called.
         if (!this._closed) {
             this._closed = true;
             this.emit('end');
-            this.emit('close');
+            this.emit('close', this.disconnectMessage);
         }
-        this.log.trace('_destroy(%s)', err);
         if (callback) callback(err);
     }
 
@@ -947,9 +958,9 @@ class Server extends EventEmitter {
         this.log.trace('new(%s, %s)', options, typeof onConnect);
         this.options = options;
         this.listening = false;
-        this.fromAGW = new AGWReader(options);
+        this.fromAGW = new Receiver(options);
         this.onErrorOrTimeout(this.fromAGW);
-        this.toAGW = new AGWWriter(options);
+        this.toAGW = new Sender(options);
         new PortRouter(this.toAGW, this.fromAGW, options, this);
         if (onConnect) this.on('connection', onConnect);
     }
@@ -1080,8 +1091,8 @@ class Server extends EventEmitter {
     }
 } // Server
 
-exports.Reader = AGWReader;
-exports.Writer = AGWWriter;
+exports.Sender = Sender;
+exports.Receiver = Receiver;
 exports.Server = Server;
 
 // The following are used for testing, only.
@@ -1093,5 +1104,5 @@ exports.HeaderLength = HeaderLength;
 // The following are used by client.js or converse.js:
 exports.Connection = Connection;
 exports.ConnectionThrottle = ConnectionThrottle;
-exports.DataToFrames = DataToFrames;
+exports.FrameAssembler = FrameAssembler;
 exports.LogNothing = LogNothing;
