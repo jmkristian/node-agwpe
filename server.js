@@ -37,6 +37,7 @@ from FrameAssembler and ConnectionThrottle.
 
 const EventEmitter = require('events');
 const Net = require('net');
+const process = require('process');
 const Stream = require('stream');
 
 const HeaderLength = 36;
@@ -58,6 +59,14 @@ function newError(message, code) {
     const err = new Error(message);
     if (code) err.code = code;
     return err;
+}
+
+function checkNodeVersion() {
+    const version = process.versions.node;
+    const parts = version.split('.').map(s => parseInt(s));
+    if (parts[0] < 8) {
+        throw new Error('node-agwpe requires node version 8 or later (not ' + version + ').');
+    }
 }
 
 function getLogger(options, that) {
@@ -156,7 +165,13 @@ function toFrame(from, encoding) {
         if ((typeof data) == 'string') {
             data = Buffer.from(data || '', encoding || 'utf-8');
         } else if (!Buffer.isBuffer(data)) {
-            throw 'data is neither a string nor a buffer';
+            if ((typeof data) == 'object') {
+                throw newError('data ' + JSON.stringify(data),
+                               'ERR_INVALID_ARG_TYPE');
+            } else {
+                throw newError('data is a ' + (typeof data) + ' (not a string or Buffer).',
+                               'ERR_INVALID_ARG_TYPE');
+            }
         }
         dataLength = data.length;
     }
@@ -305,12 +320,16 @@ class Sender extends Stream.Transform {
         if ((typeof chunk) != 'object') {
             afterTransform(newError(`Sender ${chunk}`, 'ERR_INVALID_ARG_TYPE'));
         } else {
-            var frame = toFrame(chunk, encoding);
-            if (this.log.debug()) {
-                this.log.debug('> %s', getFrameSummary(chunk));
+            try {
+                var frame = toFrame(chunk, encoding);
+                if (this.log.debug()) {
+                    this.log.debug('> %s', getFrameSummary(chunk));
+                }
+                this.push(frame);
+                if (afterTransform) afterTransform();
+            } catch(err) {
+                if (afterTransform) afterTransform(err);
             }
-            this.push(frame);
-            if (afterTransform) afterTransform();
         }
     }
 } // Sender
@@ -950,6 +969,7 @@ class Server extends EventEmitter {
 
     constructor(options, onConnect) {
         super();
+        checkNodeVersion();
         if (!(options && options.port)) {
             throw newError('no options.port', 'ERR_INVALID_ARG_VALUE');
         }
@@ -1104,6 +1124,7 @@ exports.HeaderLength = HeaderLength;
 // The following are used by client.js or converse.js:
 exports.Connection = Connection;
 exports.ConnectionThrottle = ConnectionThrottle;
+exports.checkNodeVersion = checkNodeVersion;
 exports.FrameAssembler = FrameAssembler;
 exports.LogNothing = LogNothing;
 exports.newError = newError;

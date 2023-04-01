@@ -12,6 +12,7 @@ const newError = server.newError;
 const charset = 'utf-8';
 
 function createConnection(options, connectListener) {
+    server.checkNodeVersion();
     if (!options.localAddress) throw newError('no localAddress', 'ERR_INVALID_ARG_VALUE');
     if (!options.remoteAddress) throw newError('no remoteAddress', 'ERR_INVALID_ARG_VALUE');
     const log = options.logger || server.LogNothing;
