@@ -40,14 +40,15 @@ const args = minimist(process.argv.slice(2));
 const localAddress = args._[0];
 const remoteAddress = args._[1];
 const charset = args.encoding || 'utf-8';
-const ESC = args.esc || '\x1D'; // Ctrl+]
 const host = args.host || '127.0.0.1'; // localhost, IPv4
 const ID = args.id;
-const KILL = args.kill || '\x1C'; // FS, or Windows Ctrl+Break
 const localPort = args['tnc-port'] || args.tncport || 0;
 const port = args.port || args.p || 8000;
 const remoteEOL = args.eol || '\r';
-const via = Array.isArray(args.via) ? args.via.join(' ') : args.via;
+const via = Array.isArray(args.via) ? args.via.join(' ') : args.via; // TODO
+
+const ESC = args.escape || '\x1D'; // Ctrl+]
+const TERM = args.kill || '\x1C'; // FS, or Windows Ctrl+Break
 
 const BS = '\x08';
 const DEL = '\x7F';
@@ -215,9 +216,9 @@ class Interpreter extends Stream.Transform {
             this.cursor = 0;
         }
         this.buffer += data;
-        if (this.buffer.indexOf(KILL) >= 0) {
-            setTimeout(process.exit, 10);
-            this.buffer = this.buffer.replace(new RegExp(KILL, 'g'), '')
+        if (this.buffer.indexOf(TERM) >= 0) {
+            this.emit('SIGTERM');
+            this.buffer = this.buffer.replace(new RegExp(TERM, 'g'), '')
         }
         for (var eol; eol = this.buffer.match(/[\r\n]/); ) {
             eol = eol.index;
@@ -369,6 +370,14 @@ const interpreter = new Interpreter(process.stdout);
         log.debug('interpreter emitted %s(%s)', signal, info || '');
         disconnectGracefully(signal);
     });
+});
+process.on('SIGTERM', function(info) {
+    log.debug('process received SIGTERM(%s)', info || '');
+    setTimeout(process.exit, 10);
+});
+interpreter.on('SIGTERM', function(info) {
+    log.debug('interpreter emitted SIGTERM(%s)', info || '');
+    setTimeout(process.exit, 10);
 });
 
 process.stdin.pipe(interpreter).pipe(connection);
