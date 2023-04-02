@@ -22,12 +22,12 @@ const newError = server.newError;
 const logStream = bunyanFormat({outputMode: 'short', color: false}, process.stderr);
 const log = Bunyan.createLogger({
     name: 'Converse',
-    level: Bunyan.INFO,
+    level: Bunyan.DEBUG,
     stream: logStream,
 });
 const agwLogger = Bunyan.createLogger({
     name: 'TNC',
-    level: Bunyan.WARN,
+    level: Bunyan.INFO,
     stream: logStream,
 });
 ['error', 'timeout'].forEach(function(event) {
@@ -42,23 +42,26 @@ const localAddress = args._[0];
 const remoteAddress = args._[1];
 const charset = (args.encoding || 'utf-8').toLowerCase();
 const host = args.host || '127.0.0.1'; // localhost, IPv4
-const ID = args.id;
+const ID = args.id; // TODO
 const localPort = args['tnc-port'] || args.tncport || 0;
 const port = args.port || args.p || 8000;
 const remoteEOL = args.eol || '\r';
 const via = Array.isArray(args.via) ? args.via.join(' ') : args.via; // TODO
 
-const ESC = args.escape || '\x1D'; // Ctrl+]
-const TERM = args.kill || '\x1C'; // FS, or Windows Ctrl+Break
+const ESC = (args.escape != null) ? args.escape : '\x1D'; // GS = Ctrl+]
+const TERM = (args.kill != null) ? args.kill : '\x1C'; // FS = Windows Ctrl+Break
 
-const BS = '\x08';
-const DEL = '\x7F';
-const ctrlC = '\x03';
+const BS = '\x08'; // un-type previous character
+const DEL = '\x7F'; // un-type previous character
+const EOT = '\x04'; // Ctrl+D = flush line, or EOF at the start of a raw line.
+const INT = '\x03'; // Ctrl+C = graceful kill
 const prompt = 'cmd:';
 
+const allINTs = new RegExp(INT, 'g');
 const allNULs = new RegExp('\0', 'g');
 const allRemoteEOLs = new RegExp(remoteEOL, 'g');
-const allTERMs = new RegExp(TERM, 'g');
+const allTERMs = TERM ? new RegExp(TERM, 'g') : null;
+const lineBreak = new RegExp(ESC ? ESC + '|\r|\n' : '[\r\n]');
 
 if (!(localAddress && remoteAddress) || localPort < 0 || localPort > 255) {
     const myName = path.basename(process.argv[0])
@@ -68,9 +71,9 @@ if (!(localAddress && remoteAddress) || localPort < 0 || localPort > 255) {
         `--host <address>: TCP host of the TNC. default: 127.0.0.1`,
         `--port N: TCP port of the TNC. default: 8000`,
         `--tnc-port N: TNC port (sound card number). range 0-255. default: 0`,
-        `--encoding <string>: encoding of characters to and from bytes. default: utf-8`,
+        `--encoding <string>: encoding of characters to and from bytes. default: UTF-8`,
         `--eol <string>: represents end-of-line to the remote station. default: CR`,
-        `--esc <character>: switch from conversation to command mode. default: Ctrl+]`,
+        `--escape <character>: switch from conversation to command mode. default: Ctrl+]`,
         // TODO:
         // --id <call sign> FCC call sign (for use with tactical call)
         // --via <digipeater> (may be repeated)
@@ -82,6 +85,8 @@ log.debug('%j', {
     localPort: localPort,
     localAddress: localAddress,
     remoteAddress: remoteAddress,
+    ESC: ESC,
+    TERM: TERM,
 });
 
 /** Convert control characters to 'Ctrl+X format. */
@@ -119,7 +124,9 @@ const connection = client.createConnection({
     logger: agwLogger,
 }, function connectListener(info) {
     console.log(messageFromAGW(info) || `Connected to ${remoteAddress}`);
-    console.log(`Type ${controlify(ESC)} to enter command mode.${OS.EOL}`);
+    if (ESC) {
+        console.log(`Type ${controlify(ESC)} to enter command mode.${OS.EOL}`);
+    }
 });
 ['error', 'timeout'].forEach(function(event) {
     connection.on(event, function(err) {
@@ -133,7 +140,7 @@ connection.on('close', function(info) {
 });
 
 function disconnectGracefully(signal) {
-    console.log('Disconnecting ...' + (signal ? ` (${signal})` : ''));
+    log.debug('Disconnecting(%s)', signal || '');
     connection.end(); // should cause a 'close' event, eventually.
     // But in case it doesn't:
     setTimeout(function() {
@@ -196,12 +203,9 @@ class Interpreter extends Stream.Transform {
         const that = this;
         this.log = log;
         this.stdout = stdout;
+        this.conversing = true;
         this.buffer = '';
         this.cursor = 0;
-        this.conversing = true;
-        if (!this.conversing) {
-            this.output(prompt);
-        }
         this.on('pipe', function(from) {
             that.raw = false;
             try {
@@ -213,41 +217,65 @@ class Interpreter extends Stream.Transform {
                 that.log.warn(err);
             }
         });
+        if (!this.conversing) {
+            stdout.write(prompt);
+        }
     }
     _transform(chunk, encoding, callback) {
         var data = chunk.toString(charset);
-        for (var kill; (kill = data.indexOf(ctrlC)) >= 0; ) {
-            this.emit('SIGINT');
-            data = data.substring(0, kill) + data.substring(kill + 1);
+        if (TERM && data.indexOf(TERM) >= 0) {
+            this.emit('SIGTERM');
+            data = data.replace(allTERMs, '')
         }
-        for (var esc; (esc = data.indexOf(ESC)) >= 0; ) {
-            this.onBreak();
-            this.buffer = data = '';
-            this.cursor = 0;
+        if (INT && data.indexOf(INT) >= 0) {
+            this.emit('SIGINT');
+            data = data.replace(allINTs, '');
         }
         this.buffer += data;
-        if (this.buffer.indexOf(TERM) >= 0) {
-            this.emit('SIGTERM');
-            this.buffer = this.buffer.replace(allTERMs, '')
-        }
-        for (var eol; eol = this.buffer.match(/[\r\n]/); ) {
-            eol = eol.index;
-            var skipLF = this.foundCR && this.buffer.charAt(eol) == '\n';
-            this.foundCR = false;
-            if (!skipLF) {
-                var line = this.buffer.substring(0, eol);
-                if (this.raw) {
-                    var echo = (line + OS.EOL).substring(this.cursor);
-                    this.log.trace('Interpreter echo %j', echo);
-                    this.stdout.write(echo);
+        if (EOT) {
+            for (var eot; (eot = this.buffer.indexOf(EOT)) >= 0; ) {
+                if (eot == 0 && this.raw) {
+                    this.end(); // end of file
+                } else if (eot > 0) { // flush partial line
+                    this.output(this.buffer.substring(0, eot));
                 }
-                this.onLine(line); 
+                this.buffer = this.buffer.substring(eot + EOT.length);
+            }
+        }
+        for (var brk; brk = this.buffer.match(lineBreak); ) {
+            var end = brk.index;
+            brk = brk[0];
+            log.debug('line break buffer[%d] = %j', end, brk);
+            switch(brk) {
+            case '\n':
+            case '\r':
+                var skipLF = brk == '\n' && this.foundCR;
+                this.foundCR = false;
+                if (!skipLF) {
+                    var line = this.buffer.substring(0, end);
+                    if (this.raw) {
+                        var echo = (line + OS.EOL).substring(this.cursor);
+                        this.log.trace('Interpreter echo %j', echo);
+                        this.stdout.write(echo);
+                    }
+                    this.onLine(line); 
+                    this.cursor = 0;
+                    if (brk == '\r') {
+                        this.foundCR = true;
+                    }
+                }
+                this.buffer = this.buffer.substring(end + 1);
+                break;
+            default: // ESC
+                this.log.debug('Interpreter ESC');
+                this.output(this.buffer.substring(0, end));
+                this.buffer = this.buffer.substring(end + ESC.length);
                 this.cursor = 0;
-                if (this.buffer.charAt(eol) == '\r') {
-                    this.foundCR = true;
+                if (this.conversing) {
+                    this.conversing = false;
+                    this.output(OS.EOL + prompt);
                 }
             }
-            this.buffer = this.buffer.substring(eol + 1);
         }
         if (this.raw) {
             while (this.buffer.endsWith(BS) || this.buffer.endsWith(DEL)) {
@@ -280,13 +308,6 @@ class Interpreter extends Stream.Transform {
             this.stdout.write(data, charset);
         }
     }
-    onBreak() {
-        this.log.debug('Interpreter onBreak');
-        if (this.conversing) {
-            this.conversing = false;
-            this.output(OS.EOL + prompt);
-        }
-    }
     onLine(line) {
         this.log.trace('input line %j', line);
         if (this.conversing) {
@@ -302,7 +323,9 @@ class Interpreter extends Stream.Transform {
                 connection.end();
                 return;
             case 'c': // converse
-                console.log(`Type ${controlify(ESC)} to return to command mode.${OS.EOL}`)
+                if (ESC) {
+                    console.log(`Type ${controlify(ESC)} to return to command mode.${OS.EOL}`)
+                }
                 this.conversing = true;
                 return;
             case 'r': // receive a file
