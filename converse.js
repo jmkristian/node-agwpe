@@ -287,57 +287,69 @@ class Interpreter extends Stream.Transform {
         }
     } // parseInput
     executeCommand(line) {
-        if (!this.raw) {
-            this.stdout.write(line + OS.EOL);
-        }
-        const parts = line.trim().split(/\s+/);
-        switch (parts[0].toLowerCase()) {
-        case '':
-            break;
-        case 'b': // disconnect
-            connection.end();
-            return;
-        case 'c': // converse
-            if (ESC) {
-                console.log(`Type ${controlify(ESC)} to return to command mode.${OS.EOL}`)
+        try {
+            if (!this.raw) {
+                this.stdout.write(line + OS.EOL);
             }
-            this.isConversing = true;
-            return;
-        case 'r': // receive a file
-            this.output(`receive a file...${OS.EOL}`);
-            break;
-        case 's': // send a file
-            this.output(`send a file...${OS.EOL}`);
-            break;
-        case 'w': // wait
-            this.isWaiting = true;
-            if (parts[1]) {
-                setTimeout(function(that) {
-                    that.output(prompt);
-                    that.isWaiting = false;
-                    that.flushExBuf();
-                }, parseInt(parts[1]) * 1000, this);
+            const parts = line.trim().split(/\s+/);
+            switch (parts[0].toLowerCase()) {
+            case '':
+                break;
+            case 'b': // disconnect
+                connection.end();
+                return;
+            case 'c': // converse
+                if (ESC) {
+                    console.log(`Type ${controlify(ESC)} to return to command mode.${OS.EOL}`)
+                }
+                this.isConversing = true;
+                return;
+            case 'r': // receive a file
+                this.output(`receive a file...${OS.EOL}`);
+                break;
+            case 's': // send a file
+                this.output(`send a file...${OS.EOL}`);
+                break;
+            case 'w': // wait
+                if (parts[1]) {
+                    const secs = parseInt(parts[1]);
+                    if (isNaN(secs)) {
+                        throw newError(`${parts[1]} isn't an integer.`,
+                                       'ERR_INVALID_ARG_VALUE');
+                    }
+                    this.output(`Wait for ${secs} seconds ...${OS.EOL}`);
+                    setTimeout(function(that) {
+                        that.output(prompt);
+                        that.isWaiting = false;
+                        that.flushExBuf();
+                    }, secs * 1000, this);
+                } else {
+                    this.output(`Wait until ${remoteAddress} disconnects ...${OS.EOL}`);
+                }
+                this.isWaiting = true;
+                return; // no prompt
+            case '?':
+            case 'h': // show all available commands
+                this.output([
+                    'Available commands are:',
+                    'B: disconnect from the remote station',
+                    'C: converse with the remote station',
+                    // TODO:
+                    // 'R <file name>: receive a file from the remote station and disconnect',
+                    // 'S <file name>: send a file to the remote station',
+                    'W [N]: wait for N seconds or until disconnected, whichever comes first',
+                    '',
+                    'Commands are case-insensitive.',
+                    '',].join(OS.EOL));
+                break;
+            default:
+                this.output([
+                    `${line}?`,
+                    `Type H to see a list of commands.`,
+                    '',].join(OS.EOL));
             }
-            return; // no prompt
-        case '?':
-        case 'h': // show all available commands
-            this.output([
-                'Available commands are:',
-                'B: disconnect from the remote station',
-                'C: converse with the remote station',
-                // TODO:
-                // 'R <file name>: receive a file from the remote station and disconnect',
-                // 'S <file name>: send a file to the remote station',
-                'W [N]: wait for N seconds or until disconnected, whichever comes first',
-                '',
-                'Commands are case-insensitive.',
-                '',].join(OS.EOL));
-            break;
-        default:
-            this.output([
-                `${line}?`,
-                `Type H to see a list of commands.`,
-                '',].join(OS.EOL));
+        } catch(err) {
+            this.log.warn(err);
         }
         this.output(prompt);
     } // executeCommand
