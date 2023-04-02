@@ -1,4 +1,4 @@
-/** A 'terminal' style command to communicate via AX.25.
+/** A command to communicate via AX.25 in conversational style.
     A connection to another station is initiated. Subsequently, each
     line from stdin is transmitted, and received data are written to
     stdout. A command mode enables sending and receiving files.
@@ -32,14 +32,15 @@ const agwLogger = Bunyan.createLogger({
 });
 ['error', 'timeout'].forEach(function(event) {
     logStream.on(event, function(err) {
-        process.stderr.write('logStream emitted %s(%s)%s', event, err || '', OS.EOL);
+        process.stderr.write('logStream emitted ' + event
+                             + '(' + (err || '') + ')' + OS.EOL);
     });
 });
 
 const args = minimist(process.argv.slice(2));
 const localAddress = args._[0];
 const remoteAddress = args._[1];
-const charset = args.encoding || 'utf-8';
+const charset = (args.encoding || 'utf-8').toLowerCase();
 const host = args.host || '127.0.0.1'; // localhost, IPv4
 const ID = args.id;
 const localPort = args['tnc-port'] || args.tncport || 0;
@@ -54,6 +55,10 @@ const BS = '\x08';
 const DEL = '\x7F';
 const ctrlC = '\x03';
 const prompt = 'cmd:';
+
+const allNULs = new RegExp('\0', 'g');
+const allRemoteEOLs = new RegExp(remoteEOL, 'g');
+const allTERMs = new RegExp(TERM, 'g');
 
 if (!(localAddress && remoteAddress) || localPort < 0 || localPort > 255) {
     const myName = path.basename(process.argv[0])
@@ -99,7 +104,7 @@ function controlify(from) {
 }
 function messageFromAGW(info) {
     return info && info.toString(charset)
-        .replace(new RegExp('\0', 'g'), '')
+        .replace(allNULs, '')
         .replace(/^[\r\n]*/, '')
         .replace(/[\r\n]*$/, '')
         .replace(/[\r\n]+/g, OS.EOL);
@@ -148,18 +153,23 @@ connection.on('frameReceived', function(frame) {
         log.debug('frameReceived %j', frame);
         if (!(frame.data && frame.data.toString('binary') == '\x01')) {
             try {
-                const message = `There is no TNC port ${frame.port}.`;
+                const message = `The TNC has no port ${frame.port}.`;
                 // log.debug(newError(message, 'ENOENT'));
                 const parts = availablePorts.split(';');
-                const lines = [message + ' Available TNC ports are:'];
                 const portCount = parseInt(parts[0]);
-                for (var p = 0; p < portCount; ++p) {
-                    var description = parts[p + 1];
-                    var sp = description.match(/\s+/);
-                    if (sp) description = description.substring(sp.index + sp[0].length);
-                    lines.push(p + ': ' + description);
+                const lines = [];
+                if (portCount <= 0) {
+                    lines.push(message);
+                } else {
+                    lines.push(message + ' The available ports are:');
+                    for (var p = 0; p < portCount; ++p) {
+                        var description = parts[p + 1];
+                        var sp = description.match(/\s+/);
+                        if (sp) description = description.substring(sp.index + sp[0].length);
+                        lines.push(p + ': ' + description);
+                    }
                 }
-                process.stderr.write(lines.join(OS.EOL) + OS.EOL);
+                process.stderr.write(lines.join(OS.EOL) + OS.EOL + OS.EOL);
             } catch(err) {
                 log.error(err);
             }
@@ -218,7 +228,7 @@ class Interpreter extends Stream.Transform {
         this.buffer += data;
         if (this.buffer.indexOf(TERM) >= 0) {
             this.emit('SIGTERM');
-            this.buffer = this.buffer.replace(new RegExp(TERM, 'g'), '')
+            this.buffer = this.buffer.replace(allTERMs, '')
         }
         for (var eol; eol = this.buffer.match(/[\r\n]/); ) {
             eol = eol.index;
@@ -330,14 +340,13 @@ class Receiver extends Stream.Transform {
         super({
             emitClose: false,
         });
-        this.EOLPattern = new RegExp(remoteEOL, 'g');
         this.partialEOL = '';
     }
     _transform(chunk, encoding, callback) {
         // TODO: handle a multi-character remoteEOL split across several chunks.
         const data = chunk.toString(charset);
         log.trace('received %s', JSON.stringify(data));
-        this.push(data.replace(this.EOLPattern, OS.EOL), charset);
+        this.push(data.replace(allRemoteEOLs, OS.EOL), charset);
         callback();
     }
 }
