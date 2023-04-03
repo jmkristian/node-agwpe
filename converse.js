@@ -43,7 +43,7 @@ const args = minimist(process.argv.slice(2), {
 });
 const localAddress = args._[0];
 const remoteAddress = args._[1];
-const charset = (args.encoding || 'utf-8').toLowerCase();
+const charset = (args.encoding || 'UTF-8').toLowerCase();
 const host = args.host || '127.0.0.1'; // localhost, IPv4
 const ID = args.id; // TODO
 const localPort = args['tnc-port'] || args.tncport || 0;
@@ -82,8 +82,7 @@ const agwLogger = Bunyan.createLogger({
 });
 ['error', 'timeout'].forEach(function(event) {
     logStream.on(event, function(err) {
-        process.stderr.write('logStream emitted ' + event
-                             + '(' + (err || '') + ')' + OS.EOL);
+        console.error('logStream emitted ' + event + '(' + (err || '') + ')');
     });
 });
 
@@ -94,7 +93,7 @@ if (!(localAddress && remoteAddress)
     || (TERM && TERM.length > 1)) {
     const myName = path.basename(process.argv[0])
           + ' ' + path.basename(process.argv[1]);
-    process.stderr.write([
+    console.error([
         `usage: ${myName} [options] <local call sign> <remote call sign>`,
         `--host <address>: TCP host of the TNC. default: 127.0.0.1`,
         `--port N: TCP port of the TNC. default: 8000`,
@@ -105,7 +104,6 @@ if (!(localAddress && remoteAddress)
         // TODO:
         // --id <call sign> FCC call sign (for use with tactical call)
         // --via <digipeater> (may be repeated)
-        '',
     ].join(OS.EOL));
     process.exit(1);
 }
@@ -136,7 +134,7 @@ function controlify(from) {
     return into;
 }
 function messageFromAGW(info) {
-    return info && info.toString(charset)
+    return info && info.toString('latin1')
         .replace(allNULs, '')
         .replace(/^[\r\n]*/, '')
         .replace(/[\r\n]*$/, '')
@@ -153,6 +151,57 @@ function disconnectGracefully(signal) {
     }, 10000);
 }
 
+/** A Transform that simply passes data but not 'end'.
+    This is used to pipe multiple streams into one.
+ */
+class DataTo extends Stream.Transform {
+    constructor(target) {
+        super({defaultEncoding: charset});
+        this.target = target;
+    }
+    _transform(chunk, encoding, callback) {
+        this.target.write(chunk, encoding, callback);
+    }
+    _flush(callback) {
+        if (callback) callback();
+        // But don't molest the target.
+    }
+}
+
+/** A Transform that optionally copies data into a second stream
+    (in addition to pushing it).
+ */
+class Tap extends Stream.Transform {
+    constructor() {
+        super({
+            defaultEncoding: charset,
+            readableHighWaterMark: 128,
+            writableHighWaterMark: SeveralPackets,
+        });
+    }
+    _transform(chunk, encoding, callback) {
+        this.push(chunk, encoding);
+        if (this.copyTo) {
+            this.copyTo.write(chunk, encoding, callback);
+        } else if (callback) {
+            callback();
+        }
+    }
+    _flush(callback) {
+        log.debug('Tap._flush');
+        if (this.copyTo) {
+            this.copyTo.end(undefined, undefined, callback);
+        } else if (callback) {
+            callback();
+        }
+    }
+}
+const tap = new Tap();
+tap.pipe(process.stdout);
+
+/** A Transform that changes remoteEOL to OS.EOL, and
+    optionally copies the original data into a second stream.
+ */
 class Receiver extends Stream.Transform {
     constructor() {
         super({
@@ -172,17 +221,19 @@ class Receiver extends Stream.Transform {
             this.partialEOL = false;
         }
         this.push(data.replace(allRemoteEOLs, OS.EOL), charset);
-        if (this.teeStream) {
-            this.teeStream.write(chunk, encoding, callback);
+        if (this.copyTo) {
+            this.copyTo.write(chunk, encoding, callback);
         } else if (callback) {
             callback();
         }
     }
     _flush(callback) {
-        if (this.teeStream) {
-            this.teeStream.end();
+        log.debug('Receiver._flush');
+        if (this.copyTo) {
+            this.copyTo.end(undefined, undefined, callback);
+        } else if (callback) {
+            callback();
         }
-        if (callback) callback();
     }
 }
 const receiver = new Receiver();
@@ -221,7 +272,7 @@ class Interpreter extends Stream.Transform {
             }
         });
         if (!this.isConversing) {
-            stdout.write(prompt);
+            this.stdout.write(prompt);
         }
     }
     _transform(chunk, encoding, callback) {
@@ -244,6 +295,9 @@ class Interpreter extends Stream.Transform {
         this.flushExBuf(callback);
     }
     _flush(callback) {
+        const that = this;
+        this.log.debug('Interpreter._flush');
+        // this.exBuf.push(function() {that.stdout.end();});
         this.flushExBuf(callback);
     }
     flushExBuf(callback) {
@@ -264,8 +318,8 @@ class Interpreter extends Stream.Transform {
             this.stdout.write(data, charset);
         }
     }
-    outputLine(line) {
-        this.stdout.write(line + OS.EOL, charset);
+    outputLine(line, encoding, callback) {
+        this.stdout.write(line + OS.EOL, encoding || charset, callback);
     }
     parseInput(data) {
         this.log.trace('parseInput(%j)', data);
@@ -369,6 +423,9 @@ class Interpreter extends Stream.Transform {
             case 's': // send a file
                 this.sendFile(parts[1]);
                 break;
+            case 't':
+                this.transcribe(parts[1]);
+                break;
             case 'w': // wait
                 if (parts[1]) {
                     const secs = parseInt(parts[1]);
@@ -387,6 +444,9 @@ class Interpreter extends Stream.Transform {
                 }
                 this.isWaiting = true;
                 return; // no prompt
+            case 'x':
+                this.execute(parts[1]);
+                break;
             case '?':
             case 'h': // show all available commands
                 this.outputLine([
@@ -397,9 +457,13 @@ class Interpreter extends Stream.Transform {
                     '  If no file name is given, stop receiving to the file.',
                     'S [file name]: send a binary file to the remote station.',
                     '  If no file name is given, stop sending from the file.',
+                    'T [file name]: save a copy of all output to a file.',
+                    '  If no file name is given, stop saving the output.',
+                    'X <file name>: take input from a file.',
                     'W [N]: wait for N seconds.',
                     '  If N is not given, wait until disconnected.',
-                    'Commands are case-insensitive.',
+                    '',
+                    'Commands are not case-sensitive.',
                     '',].join(OS.EOL));
                 break;
             default:
@@ -416,64 +480,89 @@ class Interpreter extends Stream.Transform {
 
     receiveFile(path) {
         const that = this;
-        if (receiver.teeStream) {
-            receiver.teeStream.end();
-            delete receiver.teeStream;
+        if (receiver.copyTo) {
+            receiver.copyTo.end();
+            delete receiver.copyTo;
         }
         if (path) {
-            const receivingStream = fs.createWriteStream(path, {
-                encoding: 'binary',
-                highWaterMark: SeveralPackets,
-            });
-            receivingStream.on('error', function(err) {
+            const toFile = fs.createWriteStream(path, {encoding: charset});
+            toFile.on('error', function(err) {
                 that.outputLine(`${err}`);
             });
-            receivingStream.on('close', function() {
-                const bytes = receivingStream.bytesWritten;
+            toFile.on('close', function() {
+                const bytes = toFile.bytesWritten;
                 that.outputLine(OS.EOL + `Received ${bytes} bytes from ${remoteAddress}.`);
                 if (!that.isConversing) that.stdout.write(prompt);
-                delete receiver.teeStream;
+                delete receiver.copyTo;
             });
-            receiver.teeStream = receivingStream;
+            receiver.copyTo = toFile;
             this.outputLine(`Receiving from ${remoteAddress} to ${path}.`);
         }
     }
 
     sendFile(path) {
         const that = this;
-        if (this.sendingStream) {
-            this.sendingStream.destroy();
-            delete this.sendingStream;
+        if (this.fromFile) {
+            this.fromFile.destroy();
+            delete this.fromFile;
         }
         if (path) {
-            this.sendingStream = fs.createReadStream(path, {
+            this.fromFile = fs.createReadStream(path, {
                 encoding: 'binary',
                 highWaterMark: SeveralPackets,
             });
-            this.sendingStream.on('error', function(err) {
+            this.fromFile.on('error', function(err) {
                 that.outputLine(`${err}`);
             });
-            this.sendingStream.on('close', function() {
-                const bytes = that.sendingStream.bytesRead;
+            this.fromFile.on('close', function() {
+                const bytes = that.fromFile.bytesRead;
                 // Often, most of the bytes haven't been transmitted yet.
                 // So it's more accurate to say 'sending' instead of 'sent'.
                 that.outputLine(OS.EOL + `Sending ${bytes} bytes to ${remoteAddress}.`);
                 if (!that.isConversing) that.stdout.write(prompt);
-                delete that.sendingStream;
+                delete that.fromFile;
             });
-            // Don't close the connection when the file closes:
-            this.sendingStream.pipe(new Stream.Transform({
-                encoding: 'binary',
-                transform: function(chunk, encoding, callback) {
-                    connection.write(chunk, encoding, callback);
-                },
-            }));
             this.outputLine(`Sending to ${remoteAddress} from ${path}.`);
+            this.fromFile.pipe(new DataTo(connection));
         }
     }
+
+    transcribe(path) {
+        const that = this;
+        if (tap.copyTo) {
+            tap.copyTo.end();
+            delete tap.copyTo;
+        }
+        if (path) {
+            const copyTo = fs.createWriteStream(path, {encoding: charset});
+            copyTo.on('error', function(err) {
+                that.outputLine(`${err}`);
+            });
+            copyTo.on('close', function() {
+                const bytes = copyTo.bytesWritten;
+                that.outputLine(OS.EOL + `Transcribed ${bytes} bytes into ${path}.`);
+                if (!that.isConversing) that.stdout.write(prompt);
+                delete tap.copyTo;
+            });
+            tap.copyTo = copyTo;
+            this.outputLine(`Transcribing into ${path}...`);
+        }
+    }
+
+    execute(path) {
+        const that = this;
+        if (path) {
+            const source = fs.createReadStream(path, {encoding: charset});
+            source.on('error', function(err) {
+                that.outputLine(`${err}`);
+            });
+            source.pipe(new DataTo(this));
+        }
+    }
+
 } // Interpreter
 
-const interpreter = new Interpreter(process.stdout);
+const interpreter = new Interpreter(tap);
 const connection = client.createConnection({
     host: host,
     port: port,
@@ -482,23 +571,28 @@ const connection = client.createConnection({
     localPort: localPort,
     logger: agwLogger,
 }, function connectListener(info) {
-    console.log(messageFromAGW(info) || `Connected to ${remoteAddress}`);
     process.stdin.pipe(interpreter).pipe(connection);
+    interpreter.outputLine(messageFromAGW(info) || `Connected to ${remoteAddress}`);
     if (ESC) {
-        console.log(`Type ${controlify(ESC)} to enter command mode.${OS.EOL}`);
+        interpreter.outputLine(`Type ${controlify(ESC)} to enter command mode.`);
     }
 });
 connection.on('close', function(info) {
     log.debug('connection emitted close(%j)', info || '')
-    console.log(messageFromAGW(info) || `Disconnected from ${remoteAddress}`);
-    setTimeout(process.exit, 10);
+    interpreter.outputLine(
+        messageFromAGW(info) || `Disconnected from ${remoteAddress}`,
+        undefined, function() {
+            log.debug('wrote disconnected, now exit');
+            setTimeout(process.exit, 10);
+        });
 });
 ['error', 'timeout'].forEach(function(event) {
     connection.on(event, function(err) {
         log.warn('connection emitted %s(%s)', event, err || '');
     });
 });
-connection.pipe(receiver).pipe(process.stdout);
+
+connection.pipe(receiver).pipe(new DataTo(tap));
 ['end', 'close'].forEach(function(event) {
     receiver.on(event, function(info) {
         log.debug('receiver emitted %s(%s)', event, info || '');
@@ -562,7 +656,7 @@ connection.on('frameReceived', function(frame) {
                         lines.push(p + ': ' + description);
                     }
                 }
-                process.stderr.write(lines.join(OS.EOL) + OS.EOL + OS.EOL);
+                interpreter.outputLine(lines.join(OS.EOL) + OS.EOL);
             } catch(err) {
                 log.error(err);
             }
