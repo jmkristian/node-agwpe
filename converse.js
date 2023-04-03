@@ -6,6 +6,7 @@
 const Bunyan = require('bunyan');
 const bunyanFormat = require('bunyan-format');
 const client = require('./client.js');
+const fs = require('fs');
 const minimist = require('minimist');
 const OS = require('os');
 const path = require('path');
@@ -34,6 +35,9 @@ const via = Array.isArray(args.via) ? args.via.join(' ') : args.via; // TODO
 
 const ESC = (args.escape != null) ? args.escape : '\x1D'; // GS = Ctrl+]
 const TERM = (args.kill != null) ? args.kill : '\x1C'; // FS = Windows Ctrl+Break
+
+const SeveralPackets = 2048; // The number of bytes in several AX.25 packets.
+// Packets are rarely longer than 256 bytes.
 
 const BS = '\x08'; // un-type previous character
 const DEL = '\x7F'; // un-type previous character
@@ -142,10 +146,8 @@ class Interpreter extends Stream.Transform {
         super({
             emitClose: false,
             defaultEncoding: charset,
-            // The highWaterMarks are tuned for AX.25 packets,
-            // which are rarely longer than 256 bytes.
-            readableHighWaterMark: 1024,
-            writableHighWaterMark: 1024,
+            readableHighWaterMark: SeveralPackets,
+            writableHighWaterMark: SeveralPackets,
         });
         const that = this;
         this.log = log;
@@ -287,6 +289,7 @@ class Interpreter extends Stream.Transform {
         }
     } // parseInput
     executeCommand(line) {
+        const that = this;
         try {
             if (!this.raw) {
                 this.stdout.write(line + OS.EOL);
@@ -308,7 +311,33 @@ class Interpreter extends Stream.Transform {
                 this.output(`receive a file...${OS.EOL}`);
                 break;
             case 's': // send a file
-                this.output(`send a file...${OS.EOL}`);
+                if (this.sendingStream) {
+                    this.sendingStream.destroy();
+                    delete this.sendingStream;
+                }
+                if (parts[1]) {
+                    this.sendingStream = fs.createReadStream(parts[1], {
+                        encoding: 'binary',
+                        highWaterMark: SeveralPackets,
+                    });
+                    this.sendingStream.on('error', function(err) {
+                        console.log(err);
+                    });
+                    this.sendingStream.on('close', function() {
+                        const bytes = that.sendingStream.bytesRead;
+                        that.output(`${OS.EOL}Sending ${bytes} bytes to ${remoteAddress}.${OS.EOL}`);
+                        delete that.sendingStream;
+                        if (!that.isConversing) that.output(prompt);
+                    });
+                    // Don't close the connection when the file closes:
+                    this.sendingStream.pipe(new Stream.Transform({
+                        encoding: 'binary',
+                        transform: function(chunk, encoding, callback) {
+                            connection.write(chunk, encoding, callback);
+                        },
+                    }));
+                    console.log(`Sending to %s from %s.`, remoteAddress, parts[1]);
+                }
                 break;
             case 'w': // wait
                 if (parts[1]) {
@@ -332,12 +361,15 @@ class Interpreter extends Stream.Transform {
             case 'h': // show all available commands
                 this.output([
                     'Available commands are:',
-                    'B: disconnect from the remote station',
-                    'C: converse with the remote station',
+                    'B: disconnect from the remote station.',
+                    'C: converse with the remote station.',
                     // TODO:
-                    // 'R <file name>: receive a file from the remote station and disconnect',
-                    // 'S <file name>: send a file to the remote station',
-                    'W [N]: wait for N seconds or until disconnected, whichever comes first',
+                    // 'R [file name]: receive a binary file from the remote station',
+                    // '  If no file name is given, stop receiving to the file.',
+                    'S [file name]: send a binary file to the remote station.',
+                    '  If no file name is given, stop sending from the file.',
+                    'W [N]: wait for N seconds.',
+                    '  If N is not given, wait until disconnected.',
                     '',
                     'Commands are case-insensitive.',
                     '',].join(OS.EOL));
