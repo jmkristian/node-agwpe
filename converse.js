@@ -20,6 +20,24 @@ const newError = server.newError;
     process.on(signal, process.exit); // immediately
 });
 
+function fromASCII(s) {
+    if (s && s.length == 2 && s.charAt(0) == '^') {
+        var code = s.charCodeAt(1);
+        while (code >= 32) code = code - 32;
+        return String.fromCharCode(code);
+    }
+    switch(s) {
+    case 'ETX': return '\x03';
+    case 'EOT': return '\x04';
+    case 'CR': return '\r';
+    case 'LF': return '\n';
+    case 'CRLF': return '\r\n';
+    case 'FS': return '\x1C';
+    case 'GS': return '\x1D';
+    default: return s;
+    }
+}
+
 const args = minimist(process.argv.slice(2), {
     'boolean': ['debug', 'trace', 'debugTNC', 'traceTNC'],
 });
@@ -30,11 +48,11 @@ const host = args.host || '127.0.0.1'; // localhost, IPv4
 const ID = args.id; // TODO
 const localPort = args['tnc-port'] || args.tncport || 0;
 const port = args.port || args.p || 8000;
-const remoteEOL = args.eol || '\r';
+const remoteEOL = fromASCII(args.eol) || '\r';
 const via = Array.isArray(args.via) ? args.via.join(' ') : args.via; // TODO
 
-const ESC = (args.escape != null) ? args.escape : '\x1D'; // GS = Ctrl+]
-const TERM = (args.kill != null) ? args.kill : '\x1C'; // FS = Windows Ctrl+Break
+const ESC = (args.escape != null) ? fromASCII(args.escape) : '\x1D'; // GS = Ctrl+]
+const TERM = (args.kill != null) ? fromASCII(args.kill) : '\x1C'; // FS = Windows Ctrl+Break
 
 const SeveralPackets = 2048; // The number of bytes in several AX.25 packets.
 // Packets are rarely longer than 256 bytes.
@@ -140,12 +158,19 @@ class Receiver extends Stream.Transform {
         super({
             emitClose: false,
         });
-        this.partialEOL = '';
     }
     _transform(chunk, encoding, callback) {
-        // TODO: handle a multi-character remoteEOL split across several chunks.
         const data = chunk.toString(charset);
         log.trace('< %s', JSON.stringify(data));
+        if (this.partialEOL && data.startsWith(remoteEOL.charAt(1))) {
+            data = data.substring(1);
+        }
+        if (remoteEOL.length > 1 && data.endsWith(remoteEOL.charAt(0))) {
+            data += remoteEOL.substring(1);
+            this.partialEOL = true;
+        } else {
+            this.partialEOL = false;
+        }
         this.push(data.replace(allRemoteEOLs, OS.EOL), charset);
         if (this.teeStream) {
             this.teeStream.write(chunk, encoding, callback);
