@@ -134,6 +134,34 @@ function disconnectGracefully(signal) {
         process.exit(3);
     }, 10000);
 }
+
+class Receiver extends Stream.Transform {
+    constructor() {
+        super({
+            emitClose: false,
+        });
+        this.partialEOL = '';
+    }
+    _transform(chunk, encoding, callback) {
+        // TODO: handle a multi-character remoteEOL split across several chunks.
+        const data = chunk.toString(charset);
+        log.trace('< %s', JSON.stringify(data));
+        this.push(data.replace(allRemoteEOLs, OS.EOL), charset);
+        if (this.teeStream) {
+            this.teeStream.write(chunk, encoding, callback);
+        } else if (callback) {
+            callback();
+        }
+    }
+    _flush(callback) {
+        if (this.teeStream) {
+            this.teeStream.end();
+        }
+        if (callback) callback();
+    }
+}
+const receiver = new Receiver();
+
 /** Handle input from stdin. When conversing, pipe it (to a connection).
     Otherwise interpret it as commands. We trust that conversation data
     may come fast (e.g. from copy-n-paste), but command data come slowly
@@ -210,6 +238,9 @@ class Interpreter extends Stream.Transform {
         } else {
             this.stdout.write(data, charset);
         }
+    }
+    outputLine(line) {
+        this.stdout.write(line + OS.EOL, charset);
     }
     parseInput(data) {
         this.log.trace('parseInput(%j)', data);
@@ -303,41 +334,15 @@ class Interpreter extends Stream.Transform {
                 return;
             case 'c': // converse
                 if (ESC) {
-                    console.log(`Type ${controlify(ESC)} to return to command mode.${OS.EOL}`)
+                    this.outputLine(`Type ${controlify(ESC)} to return to command mode.`)
                 }
                 this.isConversing = true;
                 return;
             case 'r': // receive a file
-                this.output(`receive a file...${OS.EOL}`);
+                this.receiveFile(parts[1]);
                 break;
             case 's': // send a file
-                if (this.sendingStream) {
-                    this.sendingStream.destroy();
-                    delete this.sendingStream;
-                }
-                if (parts[1]) {
-                    this.sendingStream = fs.createReadStream(parts[1], {
-                        encoding: 'binary',
-                        highWaterMark: SeveralPackets,
-                    });
-                    this.sendingStream.on('error', function(err) {
-                        console.log(err);
-                    });
-                    this.sendingStream.on('close', function() {
-                        const bytes = that.sendingStream.bytesRead;
-                        that.output(`${OS.EOL}Sending ${bytes} bytes to ${remoteAddress}.${OS.EOL}`);
-                        delete that.sendingStream;
-                        if (!that.isConversing) that.output(prompt);
-                    });
-                    // Don't close the connection when the file closes:
-                    this.sendingStream.pipe(new Stream.Transform({
-                        encoding: 'binary',
-                        transform: function(chunk, encoding, callback) {
-                            connection.write(chunk, encoding, callback);
-                        },
-                    }));
-                    console.log(`Sending to %s from %s.`, remoteAddress, parts[1]);
-                }
+                this.sendFile(parts[1]);
                 break;
             case 'w': // wait
                 if (parts[1]) {
@@ -346,64 +351,103 @@ class Interpreter extends Stream.Transform {
                         throw newError(`${parts[1]} isn't an integer.`,
                                        'ERR_INVALID_ARG_VALUE');
                     }
-                    this.output(`Wait for ${secs} seconds ...${OS.EOL}`);
+                    this.outputLine(`Wait for ${secs} seconds ...`);
                     setTimeout(function(that) {
-                        that.output(prompt);
+                        that.stdout.write(prompt);
                         that.isWaiting = false;
                         that.flushExBuf();
                     }, secs * 1000, this);
                 } else {
-                    this.output(`Wait until ${remoteAddress} disconnects ...${OS.EOL}`);
+                    this.outputLine(`Wait until ${remoteAddress} disconnects ...`);
                 }
                 this.isWaiting = true;
                 return; // no prompt
             case '?':
             case 'h': // show all available commands
-                this.output([
+                this.outputLine([
                     'Available commands are:',
                     'B: disconnect from the remote station.',
                     'C: converse with the remote station.',
-                    // TODO:
-                    // 'R [file name]: receive a binary file from the remote station',
-                    // '  If no file name is given, stop receiving to the file.',
+                    'R [file name]: receive a binary file from the remote station',
+                    '  If no file name is given, stop receiving to the file.',
                     'S [file name]: send a binary file to the remote station.',
                     '  If no file name is given, stop sending from the file.',
                     'W [N]: wait for N seconds.',
                     '  If N is not given, wait until disconnected.',
-                    '',
                     'Commands are case-insensitive.',
                     '',].join(OS.EOL));
                 break;
             default:
-                this.output([
+                this.outputLine([
                     `${line}?`,
                     `Type H to see a list of commands.`,
-                    '',].join(OS.EOL));
+                ].join(OS.EOL));
             }
         } catch(err) {
             this.log.warn(err);
         }
-        this.output(prompt);
+        this.stdout.write(prompt);
     } // executeCommand
+
+    receiveFile(path) {
+        const that = this;
+        if (receiver.teeStream) {
+            receiver.teeStream.end();
+            delete receiver.teeStream;
+        }
+        if (path) {
+            const receivingStream = fs.createWriteStream(path, {
+                encoding: 'binary',
+                highWaterMark: SeveralPackets,
+            });
+            receivingStream.on('error', function(err) {
+                that.outputLine(`${err}`);
+            });
+            receivingStream.on('close', function() {
+                const bytes = receivingStream.bytesWritten;
+                that.outputLine(OS.EOL + `Received ${bytes} bytes from ${remoteAddress}.`);
+                if (!that.isConversing) that.stdout.write(prompt);
+                delete receiver.teeStream;
+            });
+            receiver.teeStream = receivingStream;
+            this.outputLine(`Receiving from ${remoteAddress} to ${path}.`);
+        }
+    }
+
+    sendFile(path) {
+        const that = this;
+        if (this.sendingStream) {
+            this.sendingStream.destroy();
+            delete this.sendingStream;
+        }
+        if (path) {
+            this.sendingStream = fs.createReadStream(path, {
+                encoding: 'binary',
+                highWaterMark: SeveralPackets,
+            });
+            this.sendingStream.on('error', function(err) {
+                that.outputLine(`${err}`);
+            });
+            this.sendingStream.on('close', function() {
+                const bytes = that.sendingStream.bytesRead;
+                // Often, most of the bytes haven't been transmitted yet.
+                // So it's more accurate to say 'sending' instead of 'sent'.
+                that.outputLine(OS.EOL + `Sending ${bytes} bytes to ${remoteAddress}.`);
+                if (!that.isConversing) that.stdout.write(prompt);
+                delete that.sendingStream;
+            });
+            // Don't close the connection when the file closes:
+            this.sendingStream.pipe(new Stream.Transform({
+                encoding: 'binary',
+                transform: function(chunk, encoding, callback) {
+                    connection.write(chunk, encoding, callback);
+                },
+            }));
+            this.outputLine(`Sending to ${remoteAddress} from ${path}.`);
+        }
+    }
 } // Interpreter
 
-class Receiver extends Stream.Transform {
-    constructor() {
-        super({
-            emitClose: false,
-        });
-        this.partialEOL = '';
-    }
-    _transform(chunk, encoding, callback) {
-        // TODO: handle a multi-character remoteEOL split across several chunks.
-        const data = chunk.toString(charset);
-        log.trace('< %s', JSON.stringify(data));
-        this.push(data.replace(allRemoteEOLs, OS.EOL), charset);
-        callback();
-    }
-}
-
-const receiver = new Receiver();
 const interpreter = new Interpreter(process.stdout);
 const connection = client.createConnection({
     host: host,
