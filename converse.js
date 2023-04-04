@@ -1,7 +1,7 @@
 /** A command to communicate via AX.25 in conversational style.
     A connection to another station is initiated. Subsequently, each
     line from stdin is transmitted, and received data are written to
-    stdout. A command mode enables sending and receiving files.
+    stdout. A simple command mode enables sending and receiving files.
  */
 const Bunyan = require('bunyan');
 const bunyanFormat = require('bunyan-format');
@@ -39,7 +39,7 @@ function fromASCII(s) {
 }
 
 const args = minimist(process.argv.slice(2), {
-    'boolean': ['debug', 'trace', 'debugTNC', 'traceTNC'],
+    'boolean': ['debug', 'trace', 'debugTNC', 'traceTNC', 'verbose', 'v'],
 });
 const localAddress = args._[0];
 const remoteAddress = args._[1];
@@ -50,6 +50,7 @@ const ID = args.id; // TODO
 const localPort = args['tnc-port'] || args.tncport || 0;
 const port = args.port || args.p || 8000;
 const remoteEOL = fromASCII(args.eol) || '\r';
+const verbose = args.verbose || args.v;
 const via = Array.isArray(args.via) ? args.via.join(' ') : args.via; // TODO
 
 const ESC = (args.escape != null) ? fromASCII(args.escape) : '\x1D'; // GS = Ctrl+]
@@ -325,7 +326,8 @@ class Interpreter extends Stream.Transform {
         }
     }
     outputLine(line, encoding, callback) {
-        this.stdout.write(line + OS.EOL, encoding || charset, callback);
+        this.stdout.write((line != null ? line : '') + OS.EOL,
+                          encoding || charset, callback);
     }
     parseInput(data) {
         this.log.trace('parseInput(%j)', data);
@@ -382,7 +384,12 @@ class Interpreter extends Stream.Transform {
                     this.inBuf = this.inBuf.substring(end + brk.length);
                     this.isConversing = false;
                     this.cursor = 0;
-                    this.output(OS.EOL + prompt);
+                    if (verbose) {
+                        this.output(OS.EOL + `(Pausing conversation with ${remoteAddress}.)` +
+                                    OS.EOL + prompt);
+                    } else {
+                        this.output(OS.EOL + prompt);
+                    }
                 } else { // already in command mode
                     // Ignore the ESC:
                     this.inBuf = this.inBuf.substring(0, end)
@@ -420,9 +427,12 @@ class Interpreter extends Stream.Transform {
                 connection.end();
                 return; // no prompt
             case 'c': // converse
-                if (ESC) {
-                    this.outputLine(`Type ${controlify(ESC)} to return to command mode.`
-                                    + OS.EOL); // blank line
+                if (verbose) {
+                    var message = `(Resuming conversation with ${remoteAddress}.`;
+                    if (ESC) {
+                        message += ` Type ${controlify(ESC)} to pause the conversation.`;
+                    }
+                    this.outputLine(message + ')' + OS.EOL);
                 }
                 this.isConversing = true;
                 return; // no prompt
@@ -585,7 +595,7 @@ const connection = client.createConnection({
     process.stdin.pipe(interpreter).pipe(connection);
     interpreter.outputLine(messageFromAGW(info) || `Connected to ${remoteAddress}`);
     if (ESC) {
-        interpreter.outputLine(`Type ${controlify(ESC)} to enter command mode.`
+        interpreter.outputLine(`(Type ${controlify(ESC)} to pause the conversation.)`
                               + OS.EOL); // blank line
     }
 });
