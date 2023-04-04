@@ -44,6 +44,7 @@ const args = minimist(process.argv.slice(2), {
 const localAddress = args._[0];
 const remoteAddress = args._[1];
 const charset = (args.encoding || 'UTF-8').toLowerCase();
+const frameLength = parseInt(args['frame-length'] || '128');
 const host = args.host || '127.0.0.1'; // localhost, IPv4
 const ID = args.id; // TODO
 const localPort = args['tnc-port'] || args.tncport || 0;
@@ -101,6 +102,7 @@ if (!(localAddress && remoteAddress)
         `--encoding <string>: encoding of characters to and from bytes. default: UTF-8`,
         `--eol <string>: represents end-of-line to the remote station. default: CR`,
         `--escape <character>: switch from conversation to command mode. default: Ctrl+]`,
+        `--frame-length N: maximum number of bytes per frame transmitted to the TNC. default: 128`,
         // TODO:
         // --id <call sign> FCC call sign (for use with tactical call)
         // --via <digipeater> (may be repeated)
@@ -570,6 +572,7 @@ const connection = client.createConnection({
     localAddress: localAddress.toUpperCase(),
     localPort: localPort,
     logger: agwLogger,
+    frameLength: frameLength,
 }, function connectListener(info) {
     process.stdin.pipe(interpreter).pipe(connection);
     interpreter.outputLine(messageFromAGW(info) || `Connected to ${remoteAddress}`);

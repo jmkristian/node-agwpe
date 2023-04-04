@@ -16,7 +16,7 @@ function createConnection(options, connectListener) {
     if (!options.localAddress) throw newError('no localAddress', 'ERR_INVALID_ARG_VALUE');
     if (!options.remoteAddress) throw newError('no remoteAddress', 'ERR_INVALID_ARG_VALUE');
     const log = options.logger || server.LogNothing;
-    const agwOptions = {logger: options.logger};
+    const agwOptions = {logger: options.logger, frameLength: options.frameLength};
     const connectFrame = {
         port: options.localPort || 0,
         callTo: options.localAddress,
