@@ -418,14 +418,14 @@ class Interpreter extends Stream.Transform {
                 break;
             case 'b': // disconnect
                 connection.end();
-                return;
+                return; // no prompt
             case 'c': // converse
                 if (ESC) {
                     this.outputLine(`Type ${controlify(ESC)} to return to command mode.`
                                     + OS.EOL); // blank line
                 }
                 this.isConversing = true;
-                return;
+                return; // no prompt
             case 'r': // receive a file
                 this.receiveFile(parts[1]);
                 break;
@@ -454,8 +454,9 @@ class Interpreter extends Stream.Transform {
                 this.isWaiting = true;
                 return; // no prompt
             case 'x':
+                this.stdout.write(prompt); // first, then:
                 this.execute(parts[1]);
-                break;
+                return; // Don't prompt again.
             case '?':
             case 'h': // show all available commands
                 this.outputLine([
