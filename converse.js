@@ -289,8 +289,12 @@ class Interpreter extends Stream.Transform {
         }
         for (var brk; brk = data.match(inputBreak); ) {
             var end = brk.index + brk[0].length;
-            this.log.debug('line break buffer[%d] = %j', end, brk[0]);
-            this.exBuf.push(data.substring(0, end));
+            if (data.substring(brk.index, brk.index + 2) == '\r\n') {
+                end = brk.index + 2;
+            }
+            var piece = data.substring(0, end);
+            this.log.debug('input break %j', piece);
+            this.exBuf.push(piece);
             data = data.substring(end);
         }
         this.exBuf.push(data);
@@ -348,26 +352,27 @@ class Interpreter extends Stream.Transform {
             brk = brk[0];
             switch(brk) {
             case '\n':
-            case '\r':
-                var skipLF = brk == '\n' && this.foundCR;
-                this.foundCR = false;
-                if (!skipLF) {
-                    var line = this.inBuf.substring(0, end);
-                    if (this.raw) {
-                        var echo = (line + OS.EOL).substring(this.cursor);
-                        this.log.trace('echo %j', echo);
-                        this.stdout.write(echo);
-                    }
-                    if (this.isConversing) {
-                        this.output(line + remoteEOL);
-                    } else {
-                        this.executeCommand(line);
-                    }
-                    this.cursor = 0;
-                    if (brk == '\r') {
-                        this.foundCR = true;
-                    }
+                if (end == 0 && this.foundCR) {
+                    // Skip this '\n':
+                    this.foundCR = false;
+                    this.inBuf = this.inBuf.substring(1);
+                    break;
                 }
+                // Don't break; continue with:
+            case '\r':
+                this.foundCR = (brk == '\r');
+                var line = this.inBuf.substring(0, end);
+                if (this.raw) {
+                    var echo = (line + OS.EOL).substring(this.cursor);
+                    this.log.trace('echo %j', echo);
+                    this.stdout.write(echo);
+                }
+                if (this.isConversing) {
+                    this.output(line + remoteEOL);
+                } else {
+                    this.executeCommand(line);
+                }
+                this.cursor = 0;
                 this.inBuf = this.inBuf.substring(end + 1);
                 break;
             default: // ESC
@@ -403,6 +408,7 @@ class Interpreter extends Stream.Transform {
     executeCommand(line) {
         const that = this;
         try {
+            this.log.debug('executeCommand(%j)', line);
             if (!this.raw) {
                 this.stdout.write(line + OS.EOL);
             }
