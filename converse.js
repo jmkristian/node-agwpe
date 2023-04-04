@@ -104,6 +104,7 @@ if (!(localAddress && remoteAddress)
         `--eol <string>: represents end-of-line to the remote station. default: CR`,
         `--escape <character>: switch from conversation to command mode. default: Ctrl+]`,
         `--frame-length N: maximum number of bytes per frame transmitted to the TNC. default: 128`,
+        `--verbose: output more information about what's happening.`,
         // TODO:
         // --id <call sign> FCC call sign (for use with tactical call)
         // --via <digipeater> (may be repeated)
