@@ -415,7 +415,8 @@ class Interpreter extends Stream.Transform {
                 return;
             case 'c': // converse
                 if (ESC) {
-                    this.outputLine(`Type ${controlify(ESC)} to return to command mode.`)
+                    this.outputLine(`Type ${controlify(ESC)} to return to command mode.`
+                                    + OS.EOL); // blank line
                 }
                 this.isConversing = true;
                 return;
@@ -577,7 +578,8 @@ const connection = client.createConnection({
     process.stdin.pipe(interpreter).pipe(connection);
     interpreter.outputLine(messageFromAGW(info) || `Connected to ${remoteAddress}`);
     if (ESC) {
-        interpreter.outputLine(`Type ${controlify(ESC)} to enter command mode.`);
+        interpreter.outputLine(`Type ${controlify(ESC)} to enter command mode.`
+                              + OS.EOL); // blank line
     }
 });
 connection.on('close', function(info) {
