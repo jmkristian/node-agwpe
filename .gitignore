@@ -2,6 +2,7 @@
 *~
 \#*#
 *.js.txt
+*.exe
 
 # Logs
 logs
