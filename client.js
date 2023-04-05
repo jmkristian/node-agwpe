@@ -16,11 +16,28 @@ function createConnection(options, connectListener) {
     if (!options.localAddress) throw newError('no localAddress', 'ERR_INVALID_ARG_VALUE');
     if (!options.remoteAddress) throw newError('no remoteAddress', 'ERR_INVALID_ARG_VALUE');
     const log = options.logger || server.LogNothing;
+    log.debug('createConnection(%j)', Object.assign({}, options, {logger: null}));
     const agwOptions = {
         frameLength: options.frameLength,
         ID: options.ID,
         logger: options.logger,
     };
+    const via = !options.via ? [] :
+          (Array.isArray(options.via) ? options.via : (options.via + '').trim().split(/[\s,]+/))
+          .map(function(v) { // all strings
+              return (v == null) ? '' : (v + '');
+          })
+          .filter(function(v) { // no strings empty or too long
+              if (v.length > 9) {
+                  throw newError(`The digipeater call sign ${v} is longer than the maximum 9 characters.`,
+                                 'ERR_INVALID_ARG_VALUE');
+              }
+              return v != '';
+          });
+    if (via.length > 7) {
+        throw newError(`${via.length} digipeaters exceeds the maximum 7.`,
+                       'ERR_INVALID_ARG_VALUE');
+    }
     const connectFrame = {
         port: options.localPort || 0,
         callTo: options.localAddress,
@@ -101,7 +118,7 @@ function createConnection(options, connectListener) {
                     if (callback) callback(err);
                 }
             },
-        }));
+       }));
 
     throttle.write({dataKind: 'G'}); // ask about ports
     throttle.write({
@@ -109,12 +126,27 @@ function createConnection(options, connectListener) {
         dataKind: 'X', // register call sign
         callFrom: options.localAddress,
     });
-    throttle.write({
-        port: options.localPort,
-        dataKind: 'C', // connect
-        callFrom: options.localAddress,
-        callTo: options.remoteAddress,
-    });
+    if (via.length <= 0) {
+        throttle.write({
+            dataKind: 'C', // connect
+            port: options.localPort,
+            callFrom: options.localAddress,
+            callTo: options.remoteAddress,
+        });
+    } else {
+        const data = Buffer.alloc(1 + (10 * via.length));
+        data[0] = via.length;
+        for (var v = 0; v < via.length; ++v) {
+            data.write(via[v].toUpperCase(), 1 + (10 * v), via[v].length, 'ascii');
+        }
+        throttle.write({
+            dataKind: 'v', // connect via digipeaters
+            port: options.localPort,
+            callFrom: options.localAddress,
+            callTo: options.remoteAddress,
+            data: data,
+        });
+    }
     return connection;
 }
 

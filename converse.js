@@ -40,6 +40,7 @@ function fromASCII(s) {
 
 const args = minimist(process.argv.slice(2), {
     'boolean': ['debug', 'trace', 'debugTNC', 'traceTNC', 'verbose', 'v'],
+    'string': ['via'],
 });
 const localAddress = args._[0];
 const remoteAddress = args._[1];
@@ -51,7 +52,7 @@ const localPort = args['tnc-port'] || args.tncport || 0;
 const port = args.port || args.p || 8000;
 const remoteEOL = fromASCII(args.eol) || '\r';
 const verbose = args.verbose || args.v;
-const via = Array.isArray(args.via) ? args.via.join(' ') : args.via; // TODO
+const via = args.via;
 
 const ESC = (args.escape != null) ? fromASCII(args.escape) : '\x1D'; // GS = Ctrl+]
 const TERM = (args.kill != null) ? fromASCII(args.kill) : '\x1C'; // FS = Windows Ctrl+Break
@@ -101,15 +102,13 @@ if (!(localAddress && remoteAddress)
         `--host <address>: TCP host of the TNC. default: 127.0.0.1`,
         `--port N: TCP port of the TNC. default: 8000`,
         `--tnc-port N: TNC port (sound card number). range 0-255. default: 0`,
-        `--ID <string>: identifies this station, typically when the local call sign is tactical.`,
+        `--via <digis>: A comma-separated list of digipeater call signs.`,
+        `--ID <string>: identifies this station, e.g. when the local call sign is tactical.`,
         `--encoding <string>: encoding of characters to and from bytes. default: UTF-8`,
         `--eol <string>: represents end-of-line to the remote station. default: CR`,
         `--escape <character>: switch from conversation to command mode. default: Ctrl+]`,
         `--frame-length N: maximum number of bytes per frame transmitted to the TNC. default: 128`,
         `--verbose: output more information about what's happening.`,
-        // TODO:
-        // --id <call sign> FCC call sign (for use with tactical call)
-        // --via <digipeater> (may be repeated)
     ].join(OS.EOL));
     process.exit(1);
 }
@@ -592,9 +591,10 @@ const connection = client.createConnection({
     remoteAddress: remoteAddress.toUpperCase(),
     localAddress: localAddress.toUpperCase(),
     localPort: localPort,
+    via: via,
     ID: ID,
-    logger: agwLogger,
     frameLength: frameLength,
+    logger: agwLogger,
 }, function connectListener(info) {
     process.stdin.pipe(interpreter).pipe(connection);
     interpreter.outputLine(messageFromAGW(info) || `Connected to ${remoteAddress}`);
