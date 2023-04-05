@@ -50,6 +50,11 @@ const connection = AGWPE.createConnection ({
     localPort: 0, // TNC port (sound card). default: 0
     host: 'TNC-server-host', // TNC's TCP host. default: 127.0.0.1
     port: 8000, // TNC's TCP port. default: 8000
+    ID: 'call sign', /* transmitted after disconnecting,
+        in a UI (unproto) frame addressed to 'ID'. For example,
+        you can transmit your legal call sign when localAddress
+        is a tactical call sign. default: don't transmit ID.
+        */
 }, function connectListener() {
     connection.write(...); // transmit data
     connection.pipe(...); // receive data

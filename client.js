@@ -16,7 +16,11 @@ function createConnection(options, connectListener) {
     if (!options.localAddress) throw newError('no localAddress', 'ERR_INVALID_ARG_VALUE');
     if (!options.remoteAddress) throw newError('no remoteAddress', 'ERR_INVALID_ARG_VALUE');
     const log = options.logger || server.LogNothing;
-    const agwOptions = {logger: options.logger, frameLength: options.frameLength};
+    const agwOptions = {
+        frameLength: options.frameLength,
+        ID: options.ID,
+        logger: options.logger,
+    };
     const connectFrame = {
         port: options.localPort || 0,
         callTo: options.localAddress,
@@ -36,7 +40,13 @@ function createConnection(options, connectListener) {
     [socket, sender, receiver, throttle, assembler].forEach(function(emitter) {
         ['error', 'timeout'].forEach(function(event) {
             emitter.on(event, function(err) {
+                log.debug('%s emitted %s(%s)', emitter.constructor.name, event, err || '');
                 connection.emit(event, err);
+            });
+        });
+        ['finish', 'close'].forEach(function(event) {
+            emitter.on(event, function(err) {
+                log.debug('%s emitted %s(%s)', emitter.constructor.name, event, err || '');
             });
         });
     });
@@ -54,30 +64,42 @@ function createConnection(options, connectListener) {
     });
     throttle.on('end', function(info) {
         log.trace('throttle emitted end(%s)', info || '');
+        // sender.end(); // Don't do that.
+        // We might still be waiting to receive a 'd' disconnect frame.
+        // In which case we don't want the sender and socket to end.
+    });
+    throttle.on('close', function(info) {
+        log.debug('throttle emitted close(%s)', info || '');
+        connection.destroy();
+        socket.destroy();
     });
     throttle.emitFrameFromAGW = function(frame) {
         connection.onFrameFromAGW(frame);
-        if (frame.dataKind == 'C') { // connected
-            if (connectListener) connectListener(frame.data);
+        if (frame.dataKind == 'C' // connected
+            && connectListener) {
+            connectListener(frame.data);
         }
     };
     receiver.emitFrameFromAGW = function(frame) {
         throttle.onFrameFromAGW(frame);
         if (frame) connection.emit('frameReceived', frame);
-        if (frame.dataKind == 'd') { // disconnected
-            socket.destroy();
-        }
     };
     socket.pipe(receiver);
     sender.pipe(socket);
     assembler.pipe(throttle).pipe(
         // We want to pipe data from the throttle to the sender, but
-        // we don't want the sender to end when the throttle ends.
+        // we don't want the sender and socket to end when the throttle ends,
+        // in case we're waiting to receive a 'd' disconnect frame.
         new Stream.Transform({
             readableObjectMode: true,
             writableObjectMode: true,
             transform: function(chunk, encoding, callback) {
-                sender.write(chunk, encoding, callback);
+                try {
+                    sender.write(chunk, encoding, callback);
+                } catch(err) {
+                    log.debug(err);
+                    if (callback) callback(err);
+                }
             },
         }));
 

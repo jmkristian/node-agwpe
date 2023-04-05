@@ -292,6 +292,11 @@ class Receiver extends Stream.Writable {
             afterTransform(err);
         }
     } // _write
+
+    _final(callback) {
+        this.log.trace('_final');
+        if (callback) callback();
+    }
 } // Receiver
 
 /** Transform objects to binary AGWPE frames. */
@@ -318,7 +323,8 @@ class Sender extends Stream.Transform {
 
     _transform(chunk, encoding, afterTransform) {
         if ((typeof chunk) != 'object') {
-            afterTransform(newError(`Sender ${chunk}`, 'ERR_INVALID_ARG_TYPE'));
+            this.log.debug('_transform(%j, %s, %s)', chunk, encoding, afteTransform);
+            if (afterTransform) afterTransform(newError(`Sender ${chunk}`, 'ERR_INVALID_ARG_TYPE'));
         } else {
             try {
                 var frame = toFrame(chunk, encoding);
@@ -328,9 +334,15 @@ class Sender extends Stream.Transform {
                 this.push(frame);
                 if (afterTransform) afterTransform();
             } catch(err) {
+                this.log.debug(err);
                 if (afterTransform) afterTransform(err);
             }
         }
+    }
+
+    _flush(callback) {
+        this.log.trace('_flush');
+        if (callback) callback();
     }
 } // Sender
 
@@ -476,22 +488,24 @@ class ConnectionRouter extends Router {
         var dataToFramesClass = dataToFrames.constructor.name;
         var throttleClass = throttle.constructor.name;
         var that = this;
-        // The pipeline of streams from connecton to throttle
+        // The pipeline of streams from connection to throttle
         // is ended by relaying the 'end' events.
         connection.on('finish', function(info) {
             that.log.trace('%s emitted finish; %s.end', connectionClass, dataToFramesClass);
             dataToFrames.end();
         });
         dataToFrames.on('end', function(info) {
-            that.log.trace('%s emitted end; %s.end', dataToFramesClass, throttleClass);
+            that.log.trace('%s emitted end(%s); %s.end',
+                           dataToFramesClass, info || '', throttleClass);
             throttle.end();
         });
-        // The connection emits close after the throttle ends;
-        // that is, after data is flushed to the port.
-        throttle.on('end', function(info) {
-            that.log.trace('ended %s; %s.emitClose',
-                           throttleClass, connectionClass);
-            connection.emitClose();
+        // The connection is destroyed after the throttle closes;
+        // that is, after data is flushed to the port and any
+        // expected response is received.
+        throttle.on('close', function(info) {
+            that.log.trace('%s emitted close(%j); %s.destroy()',
+                           throttleClass, info || '', connectionClass);
+            connection.destroy();
         });
         ['error', 'timeout'].forEach(function(event) {
             throttle.on(event, function(info) {
@@ -535,7 +549,8 @@ class Throttle extends Stream.Transform {
             writableHighWaterMark: 5,
         });
         this.log = getLogger(options, this);
-        this.log.trace('new %s', options);
+        this.log.trace('new %j', Object.assign({}, options, {logger: null}));
+        this.buffer = [];
         this.inFlight = 0;
         this.maxInFlight = MaxFramesInFlight;
         const that = this;
@@ -554,44 +569,30 @@ class Throttle extends Stream.Transform {
     }
 
     pushBuffer() {
-        if (!this.buffer && this.afterFlushed) { // flushing is in progress
-            const finalFrame = (this.createLastFrame && this.createLastFrame());
-            if (finalFrame) {
-                // If you send a disconnect frame immediately,
-                // the previous data won't be transmitted.
-                // So wait until inFlight == 0 to send finalFrame.
-                this.log.trace('finalFrame = %j', finalFrame);
-                this.buffer = {frame: finalFrame, afterPush: this.afterFlushed};
-                this.maxInFlight = 1;
-                this.afterFlushed = null;
-            } else { // flushing is complete
-                const afterFlushed = this.afterFlushed;
-                this.afterFlushed = null;
-                afterFlushed();
-                return;
-            }
-        }
-        if (this.buffer) {
-            // There is a buffer. Can we push it?
-            if (this.inFlight >= this.maxInFlight) { // no.
+        this.log.trace('pushBuffer %d', this.buffer.length);
+        const that = this;
+        while (this.buffer.length > 0) {
+            if ((typeof this.buffer[0]) == 'function') {
+                // Call a callback:
+                this.buffer.shift()();
+            } else if (this.inFlight < this.maxInFlight) {
+                // Push a frame:
+                this.pushFrame(this.buffer.shift());
+                this.stopPolling();
+            } else {
+                // Wait until inFlight decreases.
                 if (!this.polling) {
                     this.log.trace('start polling');
-                    this.polling = setInterval(function(that) {
+                    this.polling = setInterval(function() {
                         that.pushFrame(that.queryFramesInFlight());
-                    }, 2000, this);
+                    }, 2000);
                 }
-            } else {
-                var nextBuffer = this.buffer;
-                this.buffer = null;
-                this.pushFrame(nextBuffer.frame, nextBuffer.afterPush);
-                if (this.inFlight < this.maxInFlight) {
-                    this.stopPolling();
-                }
+                break;
             }
         }
     }
 
-    pushFrame(frame, afterPush) {
+    pushFrame(frame) {
         if (frame != null) {
             switch(frame.dataKind) {
             case 'D': // connected data
@@ -599,6 +600,11 @@ class Throttle extends Stream.Transform {
             case 'M': // UNPROTO data
             case 'V': // UNPROTO VIA
                 ++this.inFlight;
+                if (this.inFlight == this.maxInFlight / 2) {
+                    // Look ahead, to possibly avoid polling later:
+                    this.log.trace('query framesInFlight');
+                    this.push(this.queryFramesInFlight());
+                }
                 break;
             default:
                 // non-data frames don't count
@@ -608,7 +614,6 @@ class Throttle extends Stream.Transform {
             }
             this.push(frame);
         }
-        if (afterPush) afterPush();
     }
 
     stopPolling() {
@@ -620,42 +625,30 @@ class Throttle extends Stream.Transform {
     }
 
     _transform(frame, encoding, callback) {
-        var err = undefined;
-        if (this.inFlight >= MaxFramesInFlight) {
-            // Don't send it now.
-            if (this.buffer) {
-                err = newError('already have a buffer');
-                this.log.debug(err);
-            } else {
-                if (this.log.trace()) {
-                    this.log.trace('postponed %s', getFrameSummary(frame));
-                }
-                this.buffer = {frame: frame, afterPush: callback};
-                this.pushBuffer();
-            }
-        } else {
-            this.pushFrame(frame);
-            if (this.inFlight < this.maxInFlight) {
-                this.stopPolling();
-                if (this.inFlight > 0 && (this.inFlight == this.maxInFlight / 2)) {
-                    // Look ahead, to possibly avoid polling later:
-                    this.pushFrame(this.queryFramesInFlight());
-                }
-            }
-            if (callback) callback();
-        }
+        this.log.trace('_transform');
+        this.buffer.push(frame);
+        if (callback) this.buffer.push(callback);
+        this.pushBuffer();
     }
 
     _flush(callback) {
         this.log.trace('_flush');
-        var that = this;
-        this.afterFlushed = function afterFlush() {
+        const that = this;
+        if (this.bufferFinalFrames) {
+            this.bufferFinalFrames();
+        }
+        this.buffer.push(function() {
             that.log.trace('after _flush');
             that.stopPolling();
             if (callback) callback();
-            that.emit('end');
-        }
+            that.emit('end'); // in case Stream.Transform doesn't do it.
+        });
         this.pushBuffer();
+    }
+
+    _destroy(err, callback) {
+        this.log.trace('_destroy(%s)', err || '');
+        if (callback) callback(err);
     }
 } // Throttle
 
@@ -698,6 +691,7 @@ class ConnectionThrottle extends Throttle {
         this.port = frame.port;
         this.myCall = frame.callTo;
         this.theirCall = frame.callFrom;
+        this.ID = options.ID;
     }
 
     queryFramesInFlight(id) {
@@ -710,28 +704,64 @@ class ConnectionThrottle extends Throttle {
     }
     
     onFrameFromAGW(frame) {
+        const that = this;
         switch(frame.dataKind) {
         case 'Y': // frames waiting to be transmitted
             this.updateFramesInFlight(frame);
             break;
         case 'd': // disconnected
             this.log.trace('received d frame');
-            this.receivedDisconnect = true;
             this.emitFrameFromAGW(frame);
-            this.end();
+            if (this._disconnected) { // we disconnected
+                // _flush has already pushed disconnect and this.ID.
+                this.destroy();
+                this.emit('close');
+            } else { // the remote station disconnected
+                this._disconnected = true;
+                this.end( // push this.ID, and then:
+                    null, null, function() {
+                        that.destroy();
+                        that.emit('close');
+                    });
+            }
             break;
         default:
             this.emitFrameFromAGW(frame);
         }
     }
 
-    createLastFrame() {
-        return this.receivedDisconnect ? null : {
-            dataKind: 'd', // disconnect
-            port: this.port,
-            callFrom: this.myCall,
-            callTo: this.theirCall,
-        };
+    bufferFinalFrames() {
+        const that = this;
+        if (!this._disconnected) {
+            this.log.debug('send disconnect');
+            // Wait until there are no more frames in flight
+            // (so they won't be obliterated by disconnecting).
+            this.buffer.push(function() {
+                that.maxInFlight = 1;
+            });
+            // Then send the disconnect:
+            this.buffer.push({
+                dataKind: 'd', // disconnect
+                port: this.port,
+                callFrom: this.myCall,
+                callTo: this.theirCall,
+            });
+            // And allow sending more frames:
+            this.buffer.push(function() {
+                that.maxInFlight = MaxFramesInFlight;
+                that._disconnected = true;
+            });
+        }
+        if (this.ID) {
+            this.log.debug('send ID');
+            this.buffer.push({
+                dataKind: 'M', // UNPROTO
+                port: this.port,
+                callTo: 'ID',
+                callFrom: this.myCall,
+                data: Buffer.from(this.ID + '', 'latin1'),
+            });
+        }
     }
 } // ConnectionThrottle
 
@@ -758,6 +788,7 @@ class FrameAssembler extends Stream.Transform {
         this.port = frame.port;
         this.myCall = frame.callTo;
         this.theirCall = frame.callFrom;
+        this.ID = options.ID;
         this.maxDataLength = (options && options.frameLength) || DefaultFrameLength;
         this.bufferCount = 0;
         const that = this;
@@ -884,6 +915,7 @@ class Connection extends Stream.Duplex {
         });
         this.log = getLogger(options, this);
         this.log.trace('new %s', options);
+        this.ID = options.ID;
         this.toAGW = toAGW;
         this.port = toAGW.port;
         this.localAddress = toAGW.myCall;
@@ -903,8 +935,9 @@ class Connection extends Stream.Duplex {
         this.log.trace('received %s frame', frame.dataKind);
         switch(frame.dataKind) {
         case 'd': // disconnect
-            this.disconnectMessage = frame.data;
-            this.destroy();
+            this.emit('end', frame.data);
+            this._ended = true;
+            // this.destroy(); not until the ConnectionThrottle emits 'close'
             break;
         case 'D': // data
             if (this._closed) {
@@ -948,10 +981,13 @@ class Connection extends Stream.Duplex {
         // 'end' and 'close', but I find that doesn't always happen.
         // This works reliably:
         this._final(); // in case it hasn't already been called.
+        if (!this._ended) {
+            this._ended = true;
+            this.emit('end');
+        }
         if (!this._closed) {
             this._closed = true;
-            this.emit('end');
-            this.emit('close', this.disconnectMessage);
+            this.emit('close');
         }
         if (callback) callback(err);
     }
@@ -1021,8 +1057,8 @@ class Server extends EventEmitter {
                       that._connected(options, callback);
                   });
             this.onErrorOrTimeout(socket);
-            socket.on('close', function() {
-                that.log.trace('socket emitted close');
+            socket.on('close', function(err) {
+                that.log.trace('socket emitted close(%s)', err || '');
                 socket.unpipe(that.fromAGW);
                 that.toAGW.unpipe(that.socket);
             });

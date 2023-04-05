@@ -46,7 +46,7 @@ const remoteAddress = args._[1];
 const charset = (args.encoding || 'UTF-8').toLowerCase();
 const frameLength = parseInt(args['frame-length'] || '128');
 const host = args.host || '127.0.0.1'; // localhost, IPv4
-const ID = args.id; // TODO
+const ID = args.ID;
 const localPort = args['tnc-port'] || args.tncport || 0;
 const port = args.port || args.p || 8000;
 const remoteEOL = fromASCII(args.eol) || '\r';
@@ -97,9 +97,11 @@ if (!(localAddress && remoteAddress)
           + ' ' + path.basename(process.argv[1]);
     console.error([
         `usage: ${myName} [options] <local call sign> <remote call sign>`,
+        `Supported options are:`,
         `--host <address>: TCP host of the TNC. default: 127.0.0.1`,
         `--port N: TCP port of the TNC. default: 8000`,
         `--tnc-port N: TNC port (sound card number). range 0-255. default: 0`,
+        `--ID <string>: identifies this station, typically when the local call sign is tactical.`,
         `--encoding <string>: encoding of characters to and from bytes. default: UTF-8`,
         `--eol <string>: represents end-of-line to the remote station. default: CR`,
         `--escape <character>: switch from conversation to command mode. default: Ctrl+]`,
@@ -590,6 +592,7 @@ const connection = client.createConnection({
     remoteAddress: remoteAddress.toUpperCase(),
     localAddress: localAddress.toUpperCase(),
     localPort: localPort,
+    ID: ID,
     logger: agwLogger,
     frameLength: frameLength,
 }, function connectListener(info) {
@@ -600,14 +603,13 @@ const connection = client.createConnection({
                               + OS.EOL); // blank line
     }
 });
+connection.on('end', function(info) {
+    log.debug('connection emitted end(%j)', info || '')
+    interpreter.outputLine(messageFromAGW(info) || `Disconnected from ${remoteAddress}`)
+});
 connection.on('close', function(info) {
-    log.debug('connection emitted close(%j)', info || '')
-    interpreter.outputLine(
-        messageFromAGW(info) || `Disconnected from ${remoteAddress}`,
-        undefined, function() {
-            log.debug('wrote disconnected, now exit');
-            setTimeout(process.exit, 10);
-        });
+    log.debug('connection emitted close(%s)', info || '')
+    setTimeout(process.exit, 10);
 });
 ['error', 'timeout'].forEach(function(event) {
     connection.on(event, function(err) {
