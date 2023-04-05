@@ -165,7 +165,12 @@ class DataTo extends Stream.Transform {
         this.target = target;
     }
     _transform(chunk, encoding, callback) {
-        this.target.write(chunk, encoding, callback);
+        try {
+            this.target.write(chunk, encoding, callback);
+        } catch(err) {
+            log.debug(err);
+            if (callback) callback(err);
+        }
     }
     _flush(callback) {
         if (callback) callback();

@@ -206,6 +206,27 @@ function fromHeader(buffer) {
     return into;
 }
 
+class FramesTo extends Stream.Transform {
+    constructor(target) {
+        super ({
+            readableObjectMode: true,
+            writableObjectMode: true,
+        });
+        this.target = target;
+    }
+    _transform(chunk, encoding, callback) {
+        try {
+            this.target.write(chunk, encoding, callback);
+        } catch(err) {
+            if (callback) callback(err);
+        }
+    }
+    _flush(callback) {
+        if (callback) callback();
+        // But don't molest the target.
+    }
+}
+
 const EmptyBuffer = Buffer.alloc(0);
 
 /** Transform binary AGWPE frames to objects. */
@@ -361,7 +382,7 @@ class Router extends EventEmitter {
         this.options = options;
         this.server = server;
         this.clients = {};
-        var that = this;
+        const that = this;
         ['error', 'timeout'].forEach(function(event) {
             fromAGW.on(event, function(info) {
                 for (const c in that.clients) {
@@ -369,7 +390,7 @@ class Router extends EventEmitter {
                 }
             });
         });
-        var fromAGWClass = fromAGW.constructor.name;
+        const fromAGWClass = fromAGW.constructor.name;
         fromAGW.on('close', function onClose() {
             that.log.trace('closed %s; destroy clients', fromAGWClass);
             for (const c in that.clients) {
@@ -385,16 +406,14 @@ class Router extends EventEmitter {
                 client = that.newClient(frame);
                 if (client) {
                     that.clients[key] = client;
-                    var clientClass = client.constructor.name;
-                    client.on('end', function() {
-                        that.log.trace('ended %s; delete client', clientClass);
+                    const clientClass = client.constructor.name;
+                    client.on('close', function() {
+                        that.log.trace('closed %s; delete client', clientClass);
                         delete that.clients[key];
                     });
-                    if (that.log.trace()) {
-                        client.on('finish', function() {
-                            that.log.trace('finished %s', clientClass);
-                        });
-                    }
+                    client.on('finish', function() {
+                        that.log.trace('finished %s', clientClass);
+                    });
                 }
             }
             try {
@@ -479,7 +498,7 @@ class ConnectionRouter extends Router {
             return null;
         }
         var throttle = new ConnectionThrottle(this.options, frame);
-        throttle.pipe(this.toAGW);
+        throttle.pipe(new FramesTo(this.toAGW));
         throttle.write(throttle.queryFramesInFlight());
         var dataToFrames = new FrameAssembler(this.options, frame);
         dataToFrames.pipe(throttle);
@@ -1162,5 +1181,6 @@ exports.Connection = Connection;
 exports.ConnectionThrottle = ConnectionThrottle;
 exports.checkNodeVersion = checkNodeVersion;
 exports.FrameAssembler = FrameAssembler;
+exports.FramesTo = FramesTo;
 exports.LogNothing = LogNothing;
 exports.newError = newError;

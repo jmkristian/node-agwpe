@@ -103,22 +103,10 @@ function createConnection(options, connectListener) {
     };
     socket.pipe(receiver);
     sender.pipe(socket);
-    assembler.pipe(throttle).pipe(
-        // We want to pipe data from the throttle to the sender, but
-        // we don't want the sender and socket to end when the throttle ends,
-        // in case we're waiting to receive a 'd' disconnect frame.
-        new Stream.Transform({
-            readableObjectMode: true,
-            writableObjectMode: true,
-            transform: function(chunk, encoding, callback) {
-                try {
-                    sender.write(chunk, encoding, callback);
-                } catch(err) {
-                    log.debug(err);
-                    if (callback) callback(err);
-                }
-            },
-       }));
+    assembler.pipe(throttle).pipe(new server.FramesTo(sender));
+    // We want to pipe data from the throttle to the sender, but
+    // we don't want the sender and socket to end when the throttle ends,
+    // in case we're waiting to receive a 'd' disconnect frame.
 
     throttle.write({dataKind: 'G'}); // ask about ports
     throttle.write({
