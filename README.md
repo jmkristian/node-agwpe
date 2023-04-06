@@ -5,42 +5,13 @@ using an AGWPE-compatible TNC (e.g.
 [SoundModem](http://uz7.ho.ua/packetradio.htm) or
 [AGWPE](https://www.sv2agw.com/downloads/)).
 
-This package includes a program `converse`,
-which you can use to interact with another station.
-It runs in a terminal emulator or Windows "cmd" window, similar to the `telnet` or `ssh` programs.
-You can watch a [demonstration video](https://youtu.be/MwgSv3Ae3Z0/).
-To get started:
-
-1. [Clone](https://www.techrepublic.com/article/how-to-clone-github-repository/) this repository.
-2. Start a command line interpreter (e.g. Windows cmd or Linux shell) and navigate into your clone.
-3. Check whether node.js is installed, by running the command `node --version`.
-   If not, [install node.js](https://nodejs.org/en/download/).
-   You'll need node version 8.0 or later.
-   If you need to upgrade, you can use `nvm` to
-   [install a new version](https://heynode.com/tutorial/install-nodejs-locally-nvm/).
-4. Download node modules, by running the command `npm install`.
-   Ignore messages about finding Python; they're harmless.
-5. Run the command `node ./converse.js <your call sign> <remote call sign> --verbose`.
-
-To see a summary of the command line options, run `node ./converse.js` (with no arguments).
-
-This software requires node.js version 8 or later.
-It works on Windows and Linux, with
-[Direwolf](https://github.com/wb2osz/direwolf) version 1.7
-and [UZ7HO SoundModem](http://uz7.ho.ua/packetradio.htm) version 1.13.
-It might work with other versions or on Mac.
-
-You can use this package in your own software.
 To get started, navigate to your package and run:
 ```bash
 npm install @jmkristian/node-agwpe
 ```
-
 The programming interface is similar to
 [node Net](https://nodejs.org/docs/latest-v8.x/api/net.html).
-Here's some sample code.
-
-Connect to another station:
+For example, connect to another station:
 ```js
 const AGWPE = require('@jmkristian/node-agwpe');
 
@@ -83,3 +54,8 @@ server.listen({
         console.log('TNC listening %o', info);
     });
 ```
+This package requires node.js version 8 or later.
+It works on Windows 8 and Ubuntu 20, with
+[Direwolf](https://github.com/wb2osz/direwolf) version 1.7
+and [UZ7HO SoundModem](http://uz7.ho.ua/packetradio.htm) version 1.13.
+It might work with other versions or on Mac.
