@@ -92,9 +92,29 @@ function createConnection(options, connectListener) {
     });
     throttle.emitFrameFromAGW = function(frame) {
         connection.onFrameFromAGW(frame);
-        if (frame.dataKind == 'C' // connected
-            && connectListener) {
-            connectListener(frame.data);
+        switch(frame.dataKind) {
+        case 'G': // ports
+            try {
+                const numberOfPorts = parseInt(frame.data.toString('ascii').split(/;/)[0]);
+                if (options.localPort >= numberOfPorts) {
+                    connection.emit('error', newError(
+                        `The TNC has no port ${options.localPort}`,
+                        'ERR_INVALID_ARG_VALUE'));
+                }
+            } catch(err) {
+                connection.emit('error', err);
+            }
+            break;
+        case 'X': // registered
+            if (!(frame.data && frame.data.toString('binary') == '\x01')) {
+                connection.emit('error', newError(
+                    `The TNC rejected the call sign ${options.localAddress}`,
+                    'ERR_INVALID_ARG_VALUE'));
+            }
+            break;
+        case 'C': // connected
+            if (connectListener) connectListener(frame.data);
+        default:
         }
     };
     receiver.emitFrameFromAGW = function(frame) {
