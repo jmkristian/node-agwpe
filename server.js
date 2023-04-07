@@ -36,9 +36,12 @@ from FrameAssembler and ConnectionThrottle.
 */
 
 const EventEmitter = require('events');
+const guts = require('./guts.js');
 const Net = require('net');
 const process = require('process');
 const Stream = require('stream');
+
+const newError = guts.newError;
 
 const HeaderLength = 36;
 const DefaultFrameLength = 128;
@@ -54,12 +57,6 @@ const LogNothing = {
     error: function(){},
     fatal: function(){},
 };
-
-function newError(message, code) {
-    const err = new Error(message);
-    if (code) err.code = code;
-    return err;
-}
 
 function checkNodeVersion() {
     const version = process.versions.node;
@@ -77,6 +74,31 @@ function getLogger(options, that) {
     } else {
         return options.logger;
     }
+}
+
+function validateHosts(hosts) {
+    var result = Array.isArray(hosts)
+        ? hosts.map(function(host) {
+            return guts.validateCallSign('local', host);
+        })
+        : [guts.validateCallSign('local', hosts)];
+    if (result.length <= 0) {
+        throw newError(`no local call signs`, 'ERR_INVALID_ARG_VALUE');
+    }
+    return result;
+}
+
+function validatePorts(ports) {
+    if (ports == null) return undefined;
+    var result = Array.isArray(ports)
+        ? ports.map(guts.validatePort)
+        : [guts.validatePort(ports)];
+    if (result.length <= 0) return undefined;
+    return result;
+}
+
+function flattenArray(a) {
+    return a.length <= 0 ? undefined : a.length == 1 ? a[0] : a;
 }
 
 function hexByte(from) {
@@ -1042,18 +1064,9 @@ class Server extends EventEmitter {
 
     listen(options, callback) {
         this.log.trace('listen(%o, %s)', options, typeof callback);
-        if (!(options && options.host && (!Array.isArray(options.host) || options.host.length > 0))) {
-            throw newError('no options.host', 'ERR_INVALID_ARG_VALUE');
-        }
-        if (options && options.port) {
-            var ports = options.port;
-            (Array.isArray(ports) ? ports : [ports]).forEach(function(port) {
-                if (port < 0 || port > 255) {
-                    throw newError(`port ${port} is outside the range 0..255`,
-                                   'ERR_INVALID_ARG_VALUE');
-                }
-            });
-        }
+        if (!options) throw newError('no options', 'ERR_INVALID_ARG_VALUE');
+        this.hosts = validateHosts(options.host);
+        this.ports = validatePorts(options.port);
         if (this.listening) {
             throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
         }
@@ -1088,32 +1101,22 @@ class Server extends EventEmitter {
 
     _connected(options, callback) {
         const that = this;
-        const hosts = Array.isArray(options.host) ? options.host : [options.host];
-        var ports = options.port;
-        if (ports != null) {
-            ports = Array.isArray(ports) ? ports : [ports];
-            for (var p = 0; p < ports.length; ++p) {
-                ports[p] = parseInt(ports[p] + '');
-            }
-        } else {
-            ports = this.ports;
-            if (!ports) {
-                // Postpone until we know what ports exist.
-                this.listenBuffer = [options, callback];
-                return;
-            } else if (ports.length <= 0) {
-                this.emit('error', newError('The TNC has no ports.', 'ENOENT'));
-                return;
-            }
+        if (!this.ports) {
+            // Postpone until we know what ports exist.
+            this.listenBuffer = [options, callback];
+            return;
+        } else if (this.ports.length <= 0) {
+            this.emit('error', newError('The TNC has no ports.', 'ENOENT'));
+            return;
         }
         this._address = {
-            host: hosts.length <= 0 ? null : hosts.length == 1 ? hosts[0] : hosts,
-            port: ports.length <= 0 ? null : ports.length == 1 ? ports[0] : ports,
+            host: flattenArray(this.hosts),
+            port: flattenArray(this.ports),
         };
         if (callback) callback(this._address);
         this.emit('listening', this._address);
-        ports.forEach(function(onePort) {
-            hosts.forEach(function(oneHost) {
+        this.ports.forEach(function(onePort) {
+            that.hosts.forEach(function(oneHost) {
                 that.toAGW.write({
                     dataKind: 'X', // Register
                     port: onePort,

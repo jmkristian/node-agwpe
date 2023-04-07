@@ -1,20 +1,16 @@
-/** A command to communicate via AX.25 in 'terminal' style.
-    A connection to another station is initiated. Subsequently, each
-    line from stdin is transmitted, and received data are written to
-    stdout. A small command language supports sending and receiving
-    files.
- */
+/** Initiate a connection to another station. */
+
+const guts = require('./guts.js');
 const Net = require('net');
 const server = require('./server.js');
 const Stream = require('stream');
-const newError = server.newError;
 
-const charset = 'utf-8';
+const newError = guts.newError;
+const validateCallSign = guts.validateCallSign;
+const validatePort = guts.validatePort;
 
 function createConnection(options, connectListener) {
     server.checkNodeVersion();
-    if (!options.localAddress) throw newError('no localAddress', 'ERR_INVALID_ARG_VALUE');
-    if (!options.remoteAddress) throw newError('no remoteAddress', 'ERR_INVALID_ARG_VALUE');
     const log = options.logger || server.LogNothing;
     log.debug('createConnection(%j)', Object.assign({}, options, {logger: null}));
     const agwOptions = {
@@ -22,6 +18,9 @@ function createConnection(options, connectListener) {
         ID: options.ID,
         logger: options.logger,
     };
+    const localPort = validatePort(options.localPort);
+    const localAddress = validateCallSign('local', options.localAddress);
+    const remoteAddress = validateCallSign('remote', options.remoteAddress);
     const via = !options.via ? [] :
           (Array.isArray(options.via) ? options.via : (options.via + '').trim().split(/[\s,]+/))
           .map(function(v) { // all strings
@@ -29,7 +28,7 @@ function createConnection(options, connectListener) {
           })
           .filter(function(v) { // no strings empty or too long
               if (v.length > 9) {
-                  throw newError(`The digipeater call sign ${v} is longer than the maximum 9 characters.`,
+                  throw newError(`The digipeater call sign ${v} is too long. The limit is 9 characters.`,
                                  'ERR_INVALID_ARG_VALUE');
               }
               return v != '';
@@ -39,9 +38,9 @@ function createConnection(options, connectListener) {
                        'ERR_INVALID_ARG_VALUE');
     }
     const connectFrame = {
-        port: options.localPort || 0,
-        callTo: options.localAddress,
-        callFrom: options.remoteAddress,
+        port: localPort || 0,
+        callTo: localAddress,
+        callFrom: remoteAddress,
     };
     const receiver = new server.Receiver(agwOptions);
     const sender = new server.Sender(agwOptions);
@@ -96,9 +95,9 @@ function createConnection(options, connectListener) {
         case 'G': // ports
             try {
                 const numberOfPorts = parseInt(frame.data.toString('ascii').split(/;/)[0]);
-                if (options.localPort >= numberOfPorts) {
+                if (localPort >= numberOfPorts) {
                     connection.emit('error', newError(
-                        `The TNC has no port ${options.localPort}`,
+                        `The TNC has no port ${localPort}`,
                         'ERR_INVALID_ARG_VALUE'));
                 }
             } catch(err) {
@@ -108,7 +107,7 @@ function createConnection(options, connectListener) {
         case 'X': // registered
             if (!(frame.data && frame.data.toString('binary') == '\x01')) {
                 connection.emit('error', newError(
-                    `The TNC rejected the call sign ${options.localAddress}`,
+                    `The TNC rejected the call sign ${localAddress}`,
                     'ERR_INVALID_ARG_VALUE'));
             }
             break;
@@ -130,16 +129,16 @@ function createConnection(options, connectListener) {
 
     throttle.write({dataKind: 'G'}); // ask about ports
     throttle.write({
-        port: options.localPort,
+        port: localPort,
         dataKind: 'X', // register call sign
-        callFrom: options.localAddress,
+        callFrom: localAddress,
     });
     if (via.length <= 0) {
         throttle.write({
             dataKind: 'C', // connect
-            port: options.localPort,
-            callFrom: options.localAddress,
-            callTo: options.remoteAddress,
+            port: localPort,
+            callFrom: localAddress,
+            callTo: remoteAddress,
         });
     } else {
         const data = Buffer.alloc(1 + (10 * via.length));
@@ -149,9 +148,9 @@ function createConnection(options, connectListener) {
         }
         throttle.write({
             dataKind: 'v', // connect via digipeaters
-            port: options.localPort,
-            callFrom: options.localAddress,
-            callTo: options.remoteAddress,
+            port: localPort,
+            callFrom: localAddress,
+            callTo: remoteAddress,
             data: data,
         });
     }
