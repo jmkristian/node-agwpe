@@ -177,7 +177,7 @@ describe('Server', function() {
                 fail('listen accepted port ' + port);
             } catch(err) {
                 log.trace('%o from listen', err);
-                expect(err.code).toEqual('ERR_INVALID_ARG_VALUE');
+                expect(err.code).toEqual('ERR_OUT_OF_RANGE');
                 expect(server.listening).toEqual(false);
             }
         });
