@@ -54,7 +54,7 @@ server.listen({
         console.log('TNC listening %o', info);
     });
 ```
-This package requires node.js version 8 or later.
+This package requires node.js version 8.17.0 or later.
 It works on Windows 8 and Ubuntu 20, with
 [Direwolf](https://github.com/wb2osz/direwolf) version 1.7
 and [UZ7HO SoundModem](http://uz7.ho.ua/packetradio.htm) version 1.13.

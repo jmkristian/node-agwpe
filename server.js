@@ -61,8 +61,8 @@ const LogNothing = {
 function checkNodeVersion() {
     const version = process.versions.node;
     const parts = version.split('.').map(s => parseInt(s));
-    if (parts[0] < 8) {
-        throw new Error('node-agwpe works with version 8 or later (not ' + version + ').');
+    if (parts[0] < 8 || (parts[0] == 8 && parts[1] < 17)) {
+        throw new Error('node-agwpe works with version 8.17.0 or later (not ' + version + ').');
     }
 }
 
