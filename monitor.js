@@ -1,20 +1,20 @@
 /** Monitor AX.25 traffic. This works best with log.level=DEBUG in config.ini. */
 
 const AGW = require('./server');
+const Bunyan = require('bunyan');
+const bunyanFormat = require('bunyan-format');
 const Net = require('net');
-const log = {
-    child: function(){return log;},
-    trace: function(){},
-    debug: function(){},
-    info:  function(message, a, b, c){console.log(' INFO ' + message, a, b, c)},
-    warn:  function(message, a, b, c){console.log(' WARN ' + message, a, b, c)},
-    error: function(message, a, b, c){console.log('ERROR ' + message, a, b, c)},
-    fatal: function(message, a, b, c){console.log('FATAL ' + message, a, b, c)},
-};
+
+const logStream = bunyanFormat({outputMode: 'short', color: false}, process.stderr);
+const log = Bunyan.createLogger({
+    name: 'monitor',
+    level: Bunyan.DEBUG,
+    stream: logStream,
+});
 
 try {
-    var toAGW = new AGW.Writer({logger: log});
-    var fromAGW = new AGW.Reader({logger: log});
+    var toAGW = new AGW.Sender({logger: log});
+    var fromAGW = new AGW.Receiver({logger: log});
     var socket = new Net.Socket();
     ['connect', 'close', 'end', 'error', 'lookup', 'ready', 'timeout']
         .forEach(function(event) {
