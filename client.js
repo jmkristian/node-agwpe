@@ -10,8 +10,8 @@ const validateCallSign = guts.validateCallSign;
 const validatePort = guts.validatePort;
 
 function createConnection(options, connectListener) {
-    server.checkNodeVersion();
-    const log = options.logger || server.LogNothing;
+    guts.checkNodeVersion();
+    const log = options.logger || guts.LogNothing;
     log.debug('createConnection(%j)', Object.assign({}, options, {logger: null}));
     const agwOptions = {
         frameLength: options.frameLength,
@@ -42,8 +42,8 @@ function createConnection(options, connectListener) {
         callTo: localAddress,
         callFrom: remoteAddress,
     };
-    const receiver = new server.Receiver(agwOptions);
-    const sender = new server.Sender(agwOptions);
+    const receiver = new guts.Receiver(agwOptions);
+    const sender = new guts.Sender(agwOptions);
     const throttle = new server.ConnectionThrottle(agwOptions, connectFrame);
     const assembler = new server.FrameAssembler(agwOptions, connectFrame);
     const connection = new server.Connection(assembler, agwOptions);

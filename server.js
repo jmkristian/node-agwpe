@@ -41,40 +41,16 @@ const Net = require('net');
 const process = require('process');
 const Stream = require('stream');
 
+const copyBuffer = guts.copyBuffer;
+const DefaultFrameLength = guts.DefaultFrameLength;
+const getDataSummary = guts.getDataSummary;
+const getFrameSummary = guts.getFrameSummary;
+const getLogger = guts.getLogger;
+const HeaderLength = guts.HeaderLength;
+const hexBuffer = guts.hexBuffer;
 const newError = guts.newError;
 
-const HeaderLength = 36;
-const DefaultFrameLength = 128;
-const NoPID = 0xF0;
 const KByte = 1 << 10;
-
-const LogNothing = {
-    child: function(){return LogNothing;},
-    trace: function(){},
-    debug: function(){},
-    info: function(){},
-    warn: function(){},
-    error: function(){},
-    fatal: function(){},
-};
-
-function checkNodeVersion() {
-    const version = process.versions.node;
-    const parts = version.split('.').map(s => parseInt(s));
-    if (parts[0] < 8 || (parts[0] == 8 && parts[1] < 17)) {
-        throw new Error('node-agwpe works with version 8.17.0 or later (not ' + version + ').');
-    }
-}
-
-function getLogger(options, that) {
-    if (!(options && options.logger)) {
-        return LogNothing;
-    } else if (that) {
-        return options.logger.child({'class': that.constructor.name});
-    } else {
-        return options.logger;
-    }
-}
 
 function validateHosts(hosts) {
     var result = Array.isArray(hosts)
@@ -101,130 +77,11 @@ function flattenArray(a) {
     return a.length <= 0 ? undefined : a.length == 1 ? a[0] : a;
 }
 
-function hexByte(from) {
-    return ((from >> 4) & 0x0F).toString(16) + (from & 0x0F).toString(16)
-}
-
-function hexBuffer(buffer) {
-    var hex = '';
-    for (var f = 0; f < buffer.length; ++f) {
-        if (hex) hex += ' ';
-        hex += hexByte(buffer[f]);
-    }
-    return hex;
-}
-
-function getDataSummary(data) {
-    if (data.length <= 32) {
-        return data.toString('binary').replace(/\r/g, '\\r');
-    } else {
-        return data.toString('binary', 0, 32).replace(/\r/g, '\\r') + '...';
-    }
-}
-
-function getFrameSummary(frame) {
-    var summary = {};
-    Object.assign(summary, frame);
-    if (frame.data == null) {
-        delete summary.data;
-        delete summary.dataLen;
-    } else if (frame.dataKind == 'S') {
-        summary.data = frame.data.toString('binary');
-        delete summary.dataLen;
-    } else if (frame.data.length <= 32) {
-        switch(frame.dataKind) {
-        case 'g':
-        case 'K':
-        case 'R':
-        case 'X':
-        case 'Y':
-        case 'y':
-            summary.data = hexBuffer(frame.data);
-            break;
-        default:
-            summary.data = getDataSummary(frame.data);
-        }
-        delete summary.dataLen;
-    } else {
-        summary.data = getDataSummary(frame.data);
-        summary.dataLen = frame.data.length;
-    }
-    if (summary.user == 0) delete summary.user;
-    if (summary.callTo == '') delete summary.callTo;
-    if (summary.callFrom == '') delete summary.callFrom;
-    return JSON.stringify(summary);
-}
-
 function mergeOptions(from) {
     var args = Array.from(arguments);
     var into = {};
     args.splice(0, 0, into);
     Object.assign.apply(Object, args);
-    return into;
-}
-
-function getASCII(frame, offset) {
-    var into = '';
-    for (var i = offset; frame[i]; ++i) {
-        into = into + String.fromCharCode(frame[i]);
-    }
-    return into;
-}
-
-function copyBuffer(from, start, end) {
-    if (start == null) start = 0;
-    if (end == null || end > from.length) end = from.length;
-    var into = Buffer.alloc(end - start);
-    from.copy(into, 0, start, end);
-    return into;
-}
-
-/** Convert an object to a binary AGWPE frame. */
-function toFrame(from, encoding) {
-    var data = from.data;
-    var dataLength = 0;
-    if (data) {
-        if ((typeof data) == 'string') {
-            data = Buffer.from(data || '', encoding || 'utf-8');
-        } else if (!Buffer.isBuffer(data)) {
-            if ((typeof data) == 'object') {
-                throw newError('data ' + JSON.stringify(data),
-                               'ERR_INVALID_ARG_TYPE');
-            } else {
-                throw newError('data is a ' + (typeof data) + ' (not a string or Buffer).',
-                               'ERR_INVALID_ARG_TYPE');
-            }
-        }
-        dataLength = data.length;
-    }
-    var frame = Buffer.alloc(HeaderLength + dataLength);
-    frame.fill(0, 0, HeaderLength);
-    frame[0] = from.port || 0;
-    frame[4] = from.dataKind ? from.dataKind.charCodeAt(0) : 0;
-    frame[6] = (from.PID != null) ? from.PID : NoPID;
-    frame.write(from.callFrom || '', 8, 'ascii');
-    frame.write(from.callTo || '', 18, 'ascii');
-    frame.writeUInt32LE(dataLength, 28);
-    frame.writeUInt32LE(from.user || 0, 32);
-    if (dataLength) {
-        data.copy(frame, HeaderLength);
-    }
-    return frame;
-}
-
-/** Convert a binary AGWPE frame header to an object. */
-function fromHeader(buffer) {
-    if (buffer.length < HeaderLength) {
-        throw `buffer.length ${buffer.length} is shorter than a header`;
-    }
-    var into = {
-        port: buffer[0],
-        dataKind: buffer.toString('binary', 4, 5),
-        PID: buffer[6],
-        callFrom: getASCII(buffer, 8),
-        callTo: getASCII(buffer, 18),
-        user: buffer.readUInt32LE(32),
-    };
     return into;
 }
 
@@ -250,144 +107,6 @@ class FramesTo extends Stream.Transform {
 }
 
 const EmptyBuffer = Buffer.alloc(0);
-
-/** Transform binary AGWPE frames to objects. */
-class Receiver extends Stream.Writable {
-
-    constructor(options) {
-        super({
-            objectMode: false,
-            highWaterMark: HeaderLength +
-                ((options && options.frameLength) || DefaultFrameLength), // bytes
-        });
-        this.log = getLogger(options, this);
-        this.log.trace('new(%s)', options);
-        this.header = Buffer.alloc(HeaderLength);
-        this.headerLength = 0;
-        const that = this;
-        this.on('pipe', function(from) {
-            that.log.trace('pipe from %s', from.constructor.name);
-        });
-        this.on('unpipe', function(from) {
-            that.log.trace('unpipe from %s', from.constructor.name);
-        });
-    }
-
-    _write(chunk, encoding, afterTransform) {
-        try {
-            this.log.trace('_write %d', chunk.length);
-            if (encoding != 'buffer') {
-                throw newError(`Receiver._write encoding ${encoding}`, 'ERR_INVALID_ARG_VALUE');
-            }
-            if (!Buffer.isBuffer(chunk)) {
-                throw newError(`Receiver._write chunk isn't a Buffer`, 'ERR_INVALID_ARG_TYPE');
-            }
-            if (this.data) {
-                // We have part of the data. Append the new chunk to it.
-                var newBuffer = Buffer.alloc(this.data.length + chunk.length);
-                this.data.copy(newBuffer, 0);
-                chunk.copy(newBuffer, this.data.length);
-                this.data = newBuffer;
-            } else {
-                // Start a new frame.
-                var headerSlice = Math.min(HeaderLength - this.headerLength, chunk.length);
-                if (headerSlice > 0) {
-                    chunk.copy(this.header, this.headerLength, 0, headerSlice);
-                    this.headerLength += headerSlice;
-                }
-                if (headerSlice < chunk.length) {
-                    this.data = copyBuffer(chunk, headerSlice);
-                }
-            }
-            while(true) {
-                if (this.headerLength < HeaderLength) {
-                    this.log.trace('wait for header');
-                    break;
-                }
-                var dataLength = this.header.readUInt32LE(28);
-                var bufferLength = this.data ? this.data.length : 0;
-                if (bufferLength < dataLength) {
-                    this.log.trace('wait for data');
-                    break;
-                }
-                // Construct a result:
-                var result = fromHeader(this.header);
-                result.data = (dataLength <= 0) ? EmptyBuffer
-                    : (dataLength == this.data.length)
-                    ? this.data
-                    : copyBuffer(this.data, 0, dataLength);
-                // Shift the remaining data into this.header and this.data:
-                this.headerLength = Math.min(HeaderLength, bufferLength - dataLength);
-                if (this.headerLength > 0) {
-                    this.data.copy(this.header, 0, dataLength, dataLength + this.headerLength);
-                }
-                var newBufferLength = bufferLength - (dataLength + this.headerLength);
-                this.data = (newBufferLength <= 0) ? null
-                    : copyBuffer(this.data, dataLength + this.headerLength);
-                if (this.log.debug()) {
-                    this.log.debug('< %s', getFrameSummary(result));
-                }
-                this.emitFrameFromAGW(result);
-            }
-            afterTransform();
-        } catch(err) {
-            this.emit('error', err);
-            afterTransform(err);
-        }
-    } // _write
-
-    _final(callback) {
-        this.log.trace('_final');
-        if (callback) callback();
-    }
-} // Receiver
-
-/** Transform objects to binary AGWPE frames. */
-class Sender extends Stream.Transform {
-
-    constructor(options) {
-        super({
-            readableObjectMode: false,
-            readableHighWaterMark: HeaderLength +
-                ((options && options.frameLength) || DefaultFrameLength), // bytes
-            writableObjectMode: true,
-            writableHighWaterMark: 1, // frame
-            defaultEncoding: options && options.encoding,
-        });
-        this.log = getLogger(options, this);
-        const that = this;
-        this.on('pipe', function(from) {
-            that.log.trace('pipe from %s', from.constructor.name);
-        });
-        this.on('unpipe', function(from) {
-            that.log.trace('unpipe from %s', from.constructor.name);
-        });
-    }
-
-    _transform(chunk, encoding, afterTransform) {
-        if ((typeof chunk) != 'object') {
-            this.log.debug('_transform(%j, %s, %s)', chunk, encoding, afteTransform);
-            if (afterTransform) afterTransform(newError(`Sender ${chunk}`, 'ERR_INVALID_ARG_TYPE'));
-        } else {
-            try {
-                var frame = toFrame(chunk, encoding);
-                if (this.log.debug()) {
-                    this.log.debug('> %s', getFrameSummary(chunk));
-                }
-                this.push(frame);
-                if (afterTransform) afterTransform();
-            } catch(err) {
-                this.log.debug(err);
-                if (afterTransform) afterTransform(err);
-            }
-        }
-    }
-
-    _flush(callback) {
-        this.log.trace('_flush');
-        if (callback) callback();
-    }
-} // Sender
 
 /** Creates a client object to handle each connection to an AGW port
     or a remote AX.25 station. Also, passes frames received via each
@@ -1046,7 +765,7 @@ class Server extends EventEmitter {
 
     constructor(options, onConnect) {
         super();
-        checkNodeVersion();
+        guts.checkNodeVersion();
         if (!(options && options.port)) {
             throw newError('no options.port', 'ERR_INVALID_ARG_VALUE');
         }
@@ -1055,9 +774,9 @@ class Server extends EventEmitter {
         this.log.trace('new(%s, %s)', options, typeof onConnect);
         this.options = options;
         this.listening = false;
-        this.fromAGW = new Receiver(options);
+        this.fromAGW = new guts.Receiver(options);
         this.onErrorOrTimeout(this.fromAGW);
-        this.toAGW = new Sender(options);
+        this.toAGW = new guts.Sender(options);
         new PortRouter(this.toAGW, this.fromAGW, options, this);
         if (onConnect) this.on('connection', onConnect);
     }
@@ -1169,21 +888,11 @@ class Server extends EventEmitter {
     }
 } // Server
 
-exports.Sender = Sender;
-exports.Receiver = Receiver;
 exports.Server = Server;
-
-// The following are used for testing, only.
-exports.fromHeader = fromHeader;
-exports.getDataSummary = getDataSummary;
-exports.toFrame = toFrame;
-exports.HeaderLength = HeaderLength;
 
 // The following are used by client.js or converse.js:
 exports.Connection = Connection;
 exports.ConnectionThrottle = ConnectionThrottle;
-exports.checkNodeVersion = checkNodeVersion;
 exports.FrameAssembler = FrameAssembler;
 exports.FramesTo = FramesTo;
-exports.LogNothing = LogNothing;
 exports.newError = newError;

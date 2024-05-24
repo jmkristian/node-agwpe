@@ -1,57 +1,53 @@
-/** Monitor AX.25 traffic. This works best with log.level=DEBUG in config.ini. */
+/** Monitor AX.25 traffic. */
+'use strict';
 
-const AGW = require('./server');
 const Bunyan = require('bunyan');
 const bunyanFormat = require('bunyan-format');
-const Net = require('net');
+const guts = require('./guts.js');
+const raw = require('./raw.js');
 
 const logStream = bunyanFormat({outputMode: 'short', color: false}, process.stderr);
 const log = Bunyan.createLogger({
     name: 'monitor',
-    level: Bunyan.DEBUG,
+    level: Bunyan.INFO,
     stream: logStream,
 });
 
 try {
-    var toAGW = new AGW.Sender({logger: log});
-    var fromAGW = new AGW.Receiver({logger: log});
-    var socket = new Net.Socket();
-    ['connect', 'close', 'end', 'error', 'lookup', 'ready', 'timeout']
-        .forEach(function(event) {
-            socket.on(event, function(info) {
-                if (info === undefined) {
-                    log.info(`socket %s`, event);
-                } else {
-                    log.info(`socket %s %o`, event, info);
-                }
-            });
-            fromAGW.on(event, function(info) {
-                if (info === undefined) {
-                    log.info(`fromAGW %s`, event);
-                } else {
-                    log.info(`fromAGW %s %o`, event, info);
-                }
-            });
-        })
-    fromAGW.emitFrameFromAGW = function(frame) {
-        if (frame.dataKind == 'G') {
-            var parts = frame.data.toString('ascii').split(';');
-            var numberOfPorts = parseInt(parts[0], 10);
-            for (var p = 0; p < numberOfPorts; ++p) {
-                toAGW.write({dataKind: 'm', port: p}); // Monitor
-                /*
-                  toAGW.write({dataKind: 'M', port: 0, // Send an unproto packet
-                  callFrom: Config.AGWPE.myCallSigns[0], callTo: 'ID',
-                  data: 'CM87wj'});
-                */
+    var socket = raw.createSocket({
+        logger: log,
+    }, function connected() {
+    });
+    socket.on('error', function(err) {
+        log.warn(err);
+    });
+    socket.on('close', function(err) {
+        log.error(err);
+        process.exit(1);
+    });
+    socket.on('packet', function(packet) {
+        var line = packet.port + ' ' + packet.fromAddress + '>' + packet.toAddress;
+        if (packet.via) {
+            line += ' via ';
+            for (var v = 0; v < packet.via.length; ++v) {
+                if (v > 0) line += ',';
+                line += packet.via[v];
             }
         }
-    };
-    socket.connect({port: 8000});
-    socket.pipe(fromAGW);
-    toAGW.pipe(socket);
-    toAGW.write({dataKind: 'R'}); // Get version of the packet engine
-    toAGW.write({dataKind: 'G'}); // Get information about all ports
+        line += ' ' + packet.type;
+        if (packet.PID != null) line += ' PID=' + guts.hexByte(packet.PID);
+        if (packet.NR != null) line += ' R=' + packet.NR;
+        if (packet.NS != null) line += ' S=' + packet.NS;
+        if (packet.P) line += ' Poll';
+        if (packet.F) line += ' Final';
+        if (packet.info) {
+            line += ' ' + guts.getDataSummary(packet.info);
+            if (packet.info.length > 32) {
+                line += ' (' + packet.info.length + ' bytes)';
+            }
+        }
+        log.info(line);
+    });
 } catch(err) {
-    console.trace(err);
+    log.error(err);
 }
