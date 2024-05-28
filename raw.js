@@ -48,7 +48,6 @@ class Socket extends EventEmitter {
 
     send(packet, callback) {
         this.log.trace('send(%s)', packet);
-        guts.validatePort(packet.port);
         const p = guts.encodePacket(packet);
         this.log.trace('send packet ' + guts.hexBuffer(p));
         this.log.trace('send packet %s', guts.decodePacket(p));

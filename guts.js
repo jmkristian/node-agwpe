@@ -201,8 +201,14 @@ function decodeCallSign(buffer, start) {
 
 /** Transform an object to a binary AX.25 packet. */
 function encodePacket(packet) {
+    validatePort(packet.port);
     validateCallSign('destination', packet.toAddress);
     validateCallSign('source', packet.fromAddress);
+    if (packet.info && !Buffer.isBuffer(packet.info)) {
+        throw newError(
+            `The packet info field must be a Buffer (not ${typeof packet.info}).`,
+            'ERR_INVALID_ARG_TYPE');
+    }
     const via = !packet.via ? []
           : Array.isArray(packet.via) ? packet.via
           : ('' + packet.via).trim().split(/[\s,]+/);
