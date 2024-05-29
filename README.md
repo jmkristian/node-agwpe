@@ -54,6 +54,65 @@ server.listen({
         console.log('TNC listening %o', info);
     });
 ```
+Monitor all received packets or send any packet:
+```js
+var socket = server.createSocket({
+    recvBufferSize: 8, // The default is 16 packets
+    sendBufferSize: 3, // The default is 16 packets
+});
+socket.on('error', function(err) {
+    console.log('bind failed ' + err);
+}
+socket.bind(function success() {
+    socket.pipe(...);
+    socket.write({
+        port: 0,
+        type: 'UI',
+        toAddress: 'ID',
+        fromAddress: 'TAC',
+        info: Buffer.from('A1CALL'),
+    });
+});
+```
+This is somewhat similar to
+[dgram](https://nodejs.org/docs/latest-v8.x/api/dgram.html) sockets.
+Unlike dgram, a socket is a
+[duplex stream](https://nodejs.org/docs/latest-v8.x/api/stream.html#stream_class_stream_duplex)
+operating in object mode.
+Each object in the stream represents a packet, with various possible fields:
+```js
+{
+    port: 0, // TNC port (usually identifies a sound card)
+    type: 'UI', // or 'I', 'SABM', 'RR' etc.
+    toAddress: 'A6CALL', // the call sign of the intended receiver
+    fromAddress: 'N0CALL', // the call sign of the sender
+    via: ['DIGIA*', 'DIGIB*', 'DIGIC'], // digipeater call signs
+    info: Buffer.from([0x56, 0x23, ...]), // data in an I or UI packet
+    NS: 7, // N(S) sequence number of this packet
+    NR: 3, // N(R) acknowledges a previous packet
+    PID: 2, // protocol ID
+    command: true,
+    response: true,
+    P: true, // poll
+    F: true, // final
+}
+```
+Most of these fields are optional. Many combinations are invalid.
+
+In the ``via`` array, call signs with an asterisk at the end represent
+digipeaters that retransmitted the packet.
+
+Every packet the TNC receives on any port will appear in the Readable stream,
+regardless of whether the server is listening for them.
+Packets transmitted by this TNC don't appear in the Readable stream.
+
+Received packets may be discarded if nobody reads from the socket or
+pipes it to something. (The flow of received packets can't be controlled.)
+Transmission is flow controlled: a pipeline might stop flowing or writers
+might see slow callbacks, if packets are offered faster than the TNC can
+transmit them. Written packets might be discarded if a writer doesn't
+wait for callbacks.
+
 This package requires node.js version 8.17.0 or later.
 It works on Windows 8 and Ubuntu 20, with
 [Direwolf](https://github.com/wb2osz/direwolf) version 1.7

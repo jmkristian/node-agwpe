@@ -39,6 +39,7 @@ const EventEmitter = require('events');
 const guts = require('./guts.js');
 const Net = require('net');
 const process = require('process');
+const RawSocket = require('./raw.js').RawSocket;
 const Stream = require('stream');
 
 const copyBuffer = guts.copyBuffer;
@@ -117,7 +118,7 @@ class Router extends EventEmitter {
     constructor(toAGW, fromAGW, options, server) {
         super();
         this.log = getLogger(options, this);
-        this.log.trace('new %s', options);
+        this.log.trace('new(%s)', options);
         this.toAGW = toAGW;
         this.fromAGW = fromAGW;
         this.options = options;
@@ -141,31 +142,43 @@ class Router extends EventEmitter {
         });
         this.log.trace('set %s.emitFrameFromAGW', fromAGW.constructor.name);
         fromAGW.emitFrameFromAGW = function(frame) {
-            var key = that.getKey(frame);
-            var client = that.clients[key];
-            if (!client) {
-                client = that.newClient(frame);
-                if (client) {
-                    that.clients[key] = client;
-                    const clientClass = client.constructor.name;
-                    client.on('close', function() {
-                        that.log.trace('closed %s; delete client', clientClass);
-                        delete that.clients[key];
-                    });
-                    client.on('finish', function() {
-                        that.log.trace('finished %s', clientClass);
-                    });
+            const client = that.getClientFor(frame);
+            if (client) {
+                try {
+                    that.log.trace('route %s frame to %s',
+                                   frame.dataKind, client && client.constructor.name);
+                    that.onFrameFromAGW(frame, client);
+                } catch(err) {
+                    that.emit('error', err);
                 }
-            }
-            try {
-                that.log.trace('route %s frame to %s',
-                               frame.dataKind, client && client.constructor.name);
-                that.onFrameFromAGW(frame, client);
-            } catch(err) {
-                that.emit('error', err);
             }
         };
     }
+
+    getClientFor(frame) {
+        const that = this;
+        const key = this.getKey(frame);
+        var client = this.clients[key];
+        if (!client) {
+            client = this.newClient(frame);
+            if (client) {
+                this.clients[key] = client;
+                const clientClass = client.constructor.name;
+                client.on('close', function() {
+                    that.log.trace('closed %s; delete client', clientClass);
+                    delete that.clients[key];
+                });
+                client.on('finish', function() {
+                    that.log.trace('finished %s', clientClass);
+                });
+            } else {
+                const myClass = this.constructor.name;
+                this.emit('error', `${myClass}.clients[${key}] == ${client}`);
+            }
+        }
+        return client;
+    }
+
 } // Router
 
 /** Manages objects that handle data to and from each AGW port. */
@@ -173,6 +186,12 @@ class PortRouter extends Router {
 
     constructor(toAGW, fromAGW, options, server) {
         super(toAGW, fromAGW, options, server);
+        this.log.debug(
+            'new(%s, %s, %s, %s)',
+            toAGW.constructor.name,
+            fromAGW.constructor.name,
+            options,
+            server.constructor.name)
     }
 
     getKey(frame) {
@@ -189,7 +208,7 @@ class PortRouter extends Router {
     }
 
     onFrameFromAGW(frame, client) {
-        this.log.debug('onFrameFromAGW %s', getFrameSummary(frame));
+        this.log.debug('onFrameFromAGW(%s)', getFrameSummary(frame));
         const that = this;
         switch(frame.dataKind) {
         case 'G': // available ports
@@ -418,9 +437,20 @@ class PortThrottle extends Throttle {
     constructor(options, frame) {
         super(options);
         this.port = frame.port;
-        // Each connection adds listeners to this.
+        // Each connection and RawSocket adds listeners to this.
         // The number of possible connections is very large, so:
         this.setMaxListeners(0); // unlimited
+        const that = this;
+        this.on('newListener', function(event, listener) {
+            if (event == 'rawFrame' && that.listenerCount('rawFrame') == 0) {
+                that.write({dataKind: 'k'}); // enable reception of K frames
+            }
+        });
+        this.on('removeListener', function(event, listener) {
+            if (event == 'rawFrame' && that.listenerCount('rawFrame') == 0) {
+                that.write({dataKind: 'k'}); // disable reception of K frames
+            }
+        });
     }
 
     queryFramesInFlight() {
@@ -436,6 +466,9 @@ class PortThrottle extends Throttle {
             break;
         case 'y': // frames waiting to be transmitted
             this.updateFramesInFlight(frame);
+            break;
+        case 'K':
+            this.emit('rawFrame', frame);
             break;
         default:
             this.emitFrameFromAGW(frame);
@@ -692,7 +725,7 @@ class Connection extends Stream.Duplex {
     }
 
     onFrameFromAGW(frame) {
-        this.log.trace('received %s frame', frame.dataKind);
+        this.log.trace('received frame.dataKind %s', frame.dataKind);
         switch(frame.dataKind) {
         case 'd': // disconnect
             this.emit('end', frame.data);
@@ -777,44 +810,69 @@ class Server extends EventEmitter {
         this.fromAGW = new guts.Receiver(options);
         this.onErrorOrTimeout(this.fromAGW);
         this.toAGW = new guts.Sender(options);
-        new PortRouter(this.toAGW, this.fromAGW, options, this);
+        this.portRouter = new PortRouter(this.toAGW, this.fromAGW, options, this);
         if (onConnect) this.on('connection', onConnect);
+    }
+
+    createSocket(options) {
+        return new RawSocket(this, options);
     }
 
     listen(options, callback) {
         this.log.trace('listen(%o, %s)', options, typeof callback);
-        if (!options) throw newError('no options', 'ERR_INVALID_ARG_VALUE');
-        this.hosts = validateHosts(options.host);
-        this.ports = validatePorts(options.port);
         if (this.listening) {
             throw newError('Server is already listening.', 'ERR_SERVER_ALREADY_LISTEN');
         }
-        this.listening = true;
-        try {
-            const that = this;
-            const connectOptions = Object.assign({host: '127.0.0.1'}, this.options);
-            delete connectOptions.logger;
-            delete connectOptions.Net;
-            this.log.trace('%s.createConnection(%o)',
-                           this.options.Net ? 'options.Net' : 'Net',
-                           connectOptions);
-            const socket = (this.options.Net || Net)
-                  .createConnection(connectOptions, function connectionListener(err) {
-                      that.log.trace('connectionListener(%s)', err);
-                      socket.pipe(that.fromAGW);
-                      that.toAGW.pipe(socket);
-                      that.socket = socket;
-                      that.toAGW.write({dataKind: 'G'}); // Get information about all ports
-                      that._connected(options, callback);
-                  });
-            this.onErrorOrTimeout(socket);
-            socket.on('close', function(err) {
-                that.log.trace('socket emitted close(%s)', err || '');
-                socket.unpipe(that.fromAGW);
-                that.toAGW.unpipe(that.socket);
-            });
-        } catch(err) {
-            this.emit('error', err);
+        if (!options) throw newError('no options', 'ERR_INVALID_ARG_VALUE');
+        this.hosts = validateHosts(options.host);
+        this.ports = validatePorts(options.port);
+        const that = this;
+        this._connectToAGW(function connected(err) {
+            if (err) {
+                that.emit('error', err);
+            } else {
+                that.listening = true;
+                that._connected(options, callback);
+            }
+        });
+    }
+
+    _connectToAGW(callback) {
+        if (this.netSocket) {
+            callback();
+        } else {
+            try {
+                const that = this;
+                const connectOptions = Object.assign({
+                    host: '127.0.0.1',
+                    port: 8000,
+                }, this.options);
+                delete connectOptions.logger;
+                delete connectOptions.Net;
+                this.log.trace('%s.createConnection(%o)',
+                               this.options.Net ? 'options.Net' : 'Net',
+                               connectOptions);
+                const socket = (this.options.Net || Net)
+                      .createConnection(connectOptions, function connectionListener(info) {
+                          that.log.debug('Connected to TNC (%s)', info || '');
+                          socket.pipe(that.fromAGW);
+                          that.toAGW.pipe(socket);
+                          that.netSocket = socket;
+                          that.toAGW.write({dataKind: 'G'}); // Get information about all ports
+                          if (callback) callback();
+                      });
+                this.onErrorOrTimeout(socket);
+                socket.on('close', function(err) {
+                    that.log.debug('socket emitted close(%s)', err || '');
+                    socket.unpipe(that.fromAGW);
+                    that.toAGW.unpipe(that.netSocket);
+                    if (that.netSocket === socket) {
+                        that.netSocket = null;
+                    }
+                });
+            } catch(err) {
+                if (callback) callback(err);
+            }
         }
     }
 
@@ -876,9 +934,9 @@ class Server extends EventEmitter {
         if (!this.listening) {
             if (callback) callback(newError('Server is already closed'));
         } else {
-            if (this.socket) {
-                this.socket.destroy();
-                delete this.socket;
+            if (this.netSocket) {
+                this.netSocket.destroy();
+                delete this.netSocket;
             }
             this.listening = false;
             delete this._address;
@@ -886,6 +944,7 @@ class Server extends EventEmitter {
             if (callback) callback();
         }
     }
+
 } // Server
 
 exports.Server = Server;
