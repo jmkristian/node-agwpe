@@ -7,6 +7,9 @@ const server = require('./server.js');
 /** Communicate via AX.25 in the style of node net, using an AGWPE-compatible TNC. */
 
 exports.createConnection = client.createConnection;
+exports.newError = guts.newError;
+exports.newRangeError = guts.newRangeError;
+exports.newTypeError = guts.newTypeError;
 exports.Server = server.Server;
 exports.validateCallSign = guts.validateCallSign;
 exports.validatePort = guts.validatePort;

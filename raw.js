@@ -138,14 +138,13 @@ class RawSocket extends Stream.Duplex {
                     data: data,
                 }, callback);
             } catch(err) {
-                if (callback) callback(err);
+                this.emit('error', err);
+                if (callback) callback();
             }
             break;
         default:
-            if (callback) callback(guts.newError(
-                `RawSocket write(${typeof packet})`,
-                'ERR_INVALID_ARG_TYPE'
-            ));
+            this.emit('error', guts.newTypeError(`RawSocket write(${typeof packet})`));
+            if (callback) callback();
         }
     }
 

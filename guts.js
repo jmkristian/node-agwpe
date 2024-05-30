@@ -45,9 +45,25 @@ const controlBits = {
     TEST: 0xC3,
 };
 
+const ERR_BUFFER_OUT_OF_BOUNDS = 'ERR_BUFFER_OUT_OF_BOUNDS';
+const ERR_INVALID_ARG_TYPE = 'ERR_INVALID_ARG_TYPE';
+const ERR_INVALID_ARG_VALUE = 'ERR_INVALID_ARG_VALUE';
+
 function newError(message, code) {
     const err = new Error(message);
     if (code) err.code = code;
+    return err;
+}
+
+function newRangeError(message, code) {
+    const err = new RangeError(message);
+    err.code = code || ERR_INVALID_ARG_VALUE;
+    return err;
+}
+
+function newTypeError(message, code) {
+    const err = new TypeError(message);
+    err.code = code || ERR_INVALID_ARG_TYPE;
     return err;
 }
 
@@ -60,36 +76,34 @@ function checkNodeVersion() {
 }
 
 function validateCallSign(name, value) {
-    if (!value) throw newError(`The ${name} call sign is "${value}".`, 'ERR_INVALID_ARG_VALUE');
+    if (!value) throw newError(`The ${name} call sign is "${value}".`, ERR_INVALID_ARG_VALUE);
     var end = value.indexOf('-');
     if (end < 0) end = value.length;
     if (end > 6) {
-        throw newError(`The ${name} call sign "${value.substring(0, end)}" is too long.`
-                       + ` The limit is 6 characters.`,
-                       'ERR_INVALID_ARG_VALUE');
+        throw newRangeError(
+            `The ${name} call sign "${value.substring(0, end)}" is too long.`
+                + ` The limit is 6 characters.`);
     }
     var wrong = value.substring(0, end).replace(/[a-zA-Z0-9\/]/g, '');
     if (wrong) {
-        throw newError(`The ${name} call sign contains ${JSON.stringify(wrong)}.`,
-                       'ERR_INVALID_ARG_VALUE');
+        throw newError(`The ${name} call sign "${value}" contains ${JSON.stringify(wrong)}.`,
+                       ERR_INVALID_ARG_VALUE);
     }
     if (end < value.length - 1) {
         const SSID = value.substring(end + 1);
         const n = parseInt(SSID);
         if (!(n >= 0 && n <= 15)) {
-            throw newError(`The ${name} SSID "${SSID}" is outside the range 0..15.`,
-                           'ERR_OUT_OF_RANGE');
+            throw newRangeError(`The ${name} SSID "${SSID}" is outside the range 0..15.`);
         }
     }
     return value.toUpperCase();
 }
 
 function validatePort(port) {
-    if (port == null) throw newError(`The TNC port is "${port}".`,'ERR_INVALID_ARG_VALUE');
-    var result = parseInt(`${port}`);
+    if (port == null) throw newError(`The TNC port number is "${port}".`, ERR_INVALID_ARG_VALUE);
+    var result = (typeof port) == 'string' ? parseInt(port) : port;
     if (!(result >= 0 && result <= 255)) {
-        throw newError(`TNC port "${port}" is outside the range 0..255.`,
-                       'ERR_OUT_OF_RANGE');
+        throw newRangeError(`TNC port "${port}" is outside the range 0..255.`);
     }
     return result;
 }
@@ -142,11 +156,9 @@ function toFrame(from, encoding) {
             data = Buffer.from(data || '', encoding || 'utf-8');
         } else if (!Buffer.isBuffer(data)) {
             if ((typeof data) == 'object') {
-                throw newError('data ' + JSON.stringify(data),
-                               'ERR_INVALID_ARG_TYPE');
+                throw newTypeError('data ' + JSON.stringify(data));
             } else {
-                throw newError('data is a ' + (typeof data) + ' (not a string or Buffer).',
-                               'ERR_INVALID_ARG_TYPE');
+                throw newTypeError('data is a ' + (typeof data) + ' (not a string or Buffer).');
             }
         }
         dataLength = data.length;
@@ -167,14 +179,13 @@ function toFrame(from, encoding) {
 }
 
 function encodeCallSign(buffer, start, call) {
-    if (start + 7 > buffer.length) throw newError(
+    if (start + 7 > buffer.length) throw newRangeError(
         "There's no room for a call sign at offset " + start
-            + " in " + hexBuffer(buffer), 'ERR_OUT_OF_RANGE');
+            + " in " + hexBuffer(buffer));
     const parts = call.split('-');
     const base = parts[0];
     const ssid = parts[1] ? parseInt(parts[1]) : 0;
-    if (base.length > 6) throw newError(
-        base + ' length > 6', 'ERR_OUT_OF_RANGE');
+    if (base.length > 6) throw newRangeError(base + ' length > 6');
     for (var b = 0; b < 6; ++b) {
         var c = (b >= base.length) ? 0x20 : base.charCodeAt(b) & 0x7F;
         buffer[start + b] = (c << 1);
@@ -183,9 +194,9 @@ function encodeCallSign(buffer, start, call) {
 }
 
 function decodeCallSign(buffer, start) {
-    if (start + 7 > buffer.length) throw newError(
+    if (start + 7 > buffer.length) throw newRangeError(
         "There's no room for a call sign at offset " + start
-            + " in " + hexBuffer(buffer), 'ERR_OUT_OF_RANGE');
+            + " in " + hexBuffer(buffer));
     var call = '';
     for (var b = start; b < start + 6; ++b) {
         var c = String.fromCharCode(buffer[b] >> 1);
@@ -205,26 +216,41 @@ function encodePacket(packet) {
     validateCallSign('destination', packet.toAddress);
     validateCallSign('source', packet.fromAddress);
     if (packet.info && !Buffer.isBuffer(packet.info)) {
-        throw newError(
-            `The packet info field must be a Buffer (not ${typeof packet.info}).`,
-            'ERR_INVALID_ARG_TYPE');
+        throw newTypeError(
+            `Packet.info must be a Buffer (not ${typeof packet.info}).`);
+    }
+    if (packet.P && packet.F) {
+        throw newError('Packet contains both P[oll] and F[inal].',
+                       ERR_INVALID_ARG_VALUE);
+    }
+    if (packet.command && packet.response) {
+        throw newError('Packet contains both command and response.',
+                       ERR_INVALID_ARG_VALUE);
     }
     const via = !packet.via ? []
           : Array.isArray(packet.via) ? packet.via
           : ('' + packet.via).trim().split(/[\s,]+/);
+    via.forEach(function(repeater) {
+        validateCallSign('repeater', repeater);
+    });
     const hasPID = (packet.type == 'I' || packet.type == 'UI');
     const buffer = Buffer.alloc(
         14 // source and destination addresses
-            + (via.length * 7) // digipeater addresses
+            + (via.length * 7) // repeater addresses
             + 1 // control field
             + (hasPID ? 1 : 0) // PID
             + (packet.info ? packet.info.length : 0)
     );
     encodeCallSign(buffer, 0, packet.toAddress);
     encodeCallSign(buffer, 7, packet.fromAddress);
+    if (packet.command) {
+        buffer[6] = buffer[6] | 0x80;
+    } else if (packet.response) {
+        buffer[13] = buffer[13] | 0x80;
+    }
     var next = 14;
-    via.forEach(function(digi) {
-        encodeCallSign(buffer, next, digi);
+    via.forEach(function(repeater) {
+        encodeCallSign(buffer, next, repeater);
         next += 7;
     });
     buffer[next - 1] += 1; // end of addresses
@@ -245,7 +271,7 @@ function encodePacket(packet) {
     case 'RNR':
     case 'REJ':
     case 'SREJ':
-        control += (packet.NR & 7) << 5;
+        if (packet.NR != null) control += (packet.NR & 7) << 5;
         if (packet.P) {
             buffer[6] += 0x80;
         } else if (packet.F) {
@@ -254,8 +280,8 @@ function encodePacket(packet) {
         break;
     case 'I':
         if (packet.P) control += 0x10;
-        control += (packet.NR & 7) << 5;
-        control += (packet.NS & 7) << 1;
+        if (packet.NR != null) control += (packet.NR & 7) << 5;
+        if (packet.NS != null) control += (packet.NS & 7) << 1;
         break;
     default:
     }
@@ -289,8 +315,7 @@ function decodePacket(buffer) {
         result.via = via;
     }
     if (next >= buffer.length) throw newError(
-        'No control field in ' + hexBuffer(buffer),
-        'ERR_BUFFER_OUT_OF_BOUNDS');
+        'No control field in ' + hexBuffer(buffer), ERR_BUFFER_OUT_OF_BOUNDS);
     const control = buffer[next++];
     var type = (control & 1) == 0 ? 'I' : (control & 2) == 0 ? 'S' : 'U';
     switch(type) {
@@ -312,7 +337,7 @@ function decodePacket(buffer) {
     case 'UI':
         if (next >= buffer.length) throw newError(
             'No PID field in ' + type + ' ' + hexBuffer(buffer),
-            'ERR_BUFFER_OUT_OF_BOUNDS');
+            ERR_BUFFER_OUT_OF_BOUNDS);
         var PID = buffer[next++];
         switch(PID) {
         case NoPID: // no protocol
@@ -321,7 +346,7 @@ function decodePacket(buffer) {
         case 0x08:
             if (next >= buffer.length) throw newError(
                 'No escaped PID field in ' + type + ' ' + hexBuffer(buffer),
-                'ERR_BUFFER_OUT_OF_BOUNDS');
+                ERR_BUFFER_OUT_OF_BOUNDS);
             result.PID = buffer[next++];
             break;
         default:
@@ -445,10 +470,10 @@ class Receiver extends Stream.Writable {
         try {
             this.log.trace('_write %d', chunk.length);
             if (encoding != 'buffer') {
-                throw newError(`Receiver._write encoding ${encoding}`, 'ERR_INVALID_ARG_VALUE');
+                throw newError(`Receiver._write encoding ${encoding}`, ERR_INVALID_ARG_VALUE);
             }
             if (!Buffer.isBuffer(chunk)) {
-                throw newError(`Receiver._write chunk isn't a Buffer`, 'ERR_INVALID_ARG_TYPE');
+                throw newTypeError(`Receiver._write chunk isn't a Buffer`);
             }
             if (this.data) {
                 // We have part of the data. Append the new chunk to it.
@@ -535,7 +560,7 @@ class Sender extends Stream.Transform {
     _transform(chunk, encoding, afterTransform) {
         if ((typeof chunk) != 'object') {
             this.log.debug('_transform(%j, %s, %s)', chunk, encoding, afteTransform);
-            if (afterTransform) afterTransform(newError(`Sender ${chunk}`, 'ERR_INVALID_ARG_TYPE'));
+            if (afterTransform) afterTransform(newTypeError(`Sender ${chunk}`));
         } else {
             try {
                 var frame = toFrame(chunk, encoding);
@@ -571,6 +596,8 @@ exports.hexBuffer = hexBuffer;
 exports.hexByte = hexByte;
 exports.LogNothing = LogNothing;
 exports.newError = newError;
+exports.newRangeError = newRangeError;
+exports.newTypeError = newTypeError;
 exports.Receiver = Receiver;
 exports.Sender = Sender;
 exports.validateCallSign = validateCallSign;
