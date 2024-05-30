@@ -133,12 +133,15 @@ class Router extends EventEmitter {
             });
         });
         const fromAGWClass = fromAGW.constructor.name;
-        fromAGW.on('close', function onClose() {
-            that.log.trace('closed %s; destroy clients', fromAGWClass);
+        fromAGW.on('close', function(err) {
+            that.log.trace('close(%s) from %s; destroy clients', err || '', fromAGWClass);
             for (const c in that.clients) {
                 that.clients[c].destroy();
             }
             that.emit('close');
+        });
+        fromAGW.on('end', function(err) {
+            that.log.trace('end(%s) from %s', err || '', fromAGWClass);
         });
         this.log.trace('set %s.emitFrameFromAGW', fromAGW.constructor.name);
         fromAGW.emitFrameFromAGW = function(frame) {
