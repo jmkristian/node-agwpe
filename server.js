@@ -124,6 +124,7 @@ class Router extends EventEmitter {
         this.options = options;
         this.server = server;
         this.clients = {};
+        fromAGW.client = this;
         const that = this;
         ['error', 'timeout'].forEach(function(event) {
             fromAGW.on(event, function(info) {
@@ -143,17 +144,17 @@ class Router extends EventEmitter {
         fromAGW.on('end', function(err) {
             that.log.trace('end(%s) from %s', err || '', fromAGWClass);
         });
-        this.log.trace('set %s.emitFrameFromAGW', fromAGW.constructor.name);
+        this.log.trace('set %s.emitFrameFromAGW', fromAGWClass);
         fromAGW.emitFrameFromAGW = function(frame) {
-            const client = that.getClientFor(frame);
-            if (client) {
-                try {
+            try {
+                const client = that.getClientFor(frame);
+                if (client) {
                     that.log.trace('route %s frame to %s',
                                    frame.dataKind, client && client.constructor.name);
                     that.onFrameFromAGW(frame, client);
-                } catch(err) {
-                    that.emit('error', err);
                 }
+            } catch(err) {
+                that.emit('error', err);
             }
         };
     }
@@ -176,7 +177,7 @@ class Router extends EventEmitter {
                 });
             } else {
                 const myClass = this.constructor.name;
-                this.emit('error', `${myClass}.clients[${key}] == ${client}`);
+                throw(`${myClass}.clients[${key}] == ${client}`);
             }
         }
         return client;
@@ -231,9 +232,13 @@ class PortRouter extends Router {
             }
             break;
         case 'X': // registered myCall
-            if (!(frame.data && frame.data.length > 0 && frame.data[0] == 1)) {
-                this.server.emit('error', newError('listen failed: ' + getFrameSummary(frame), 'ENOENT'));
-            }
+            const myCall = frame.callFrom;
+            const code = frame.data && frame.data.length > 0 && frame.data[0];
+            const err = (code == 1) ? null : newError(
+                `Failed to register ${myCall} with the TNC (code ${code}).`,
+                'EACCES');
+            if (err) err.address = myCall;
+            this.emit('registeredCall', err || myCall);
             break;
         default:
             client.onFrameFromAGW(frame);
@@ -249,27 +254,36 @@ class ConnectionRouter extends Router {
     }
 
     getKey(frame) {
-        if (frame.dataKind == 'Y') {
-            return `${frame.port} ${frame.callTo} ${frame.callFrom}`;
-        } else {
-            return `${frame.port} ${frame.callFrom} ${frame.callTo}`;
+        const key = (frame.dataKind == 'Y')
+              ? `${frame.port} ${frame.callTo} ${frame.callFrom}`
+              : `${frame.port} ${frame.callFrom} ${frame.callTo}`;
+        if (frame.dataKind == 'sendConnection' && this.clients[key]) {
+            throw newError(
+                `${frame.callTo} is already connected to ${frame.callFrom}.`,
+                'EADDRINUSE');
         }
+        return key;
     }
 
     newClient(frame) {
-        if (frame.dataKind != 'C') { // connect
+        switch(frame.dataKind) {
+        case 'sendConnection':
+        case 'C': // received connection
+            break;
+        default: // unexpected
+            this.log.warn('ConnectionRouter.newClient(dataKind: %s)', frame.dataKind);
             return null;
         }
-        var throttle = new ConnectionThrottle(this.options, frame);
+        const throttle = new ConnectionThrottle(this.options, frame);
         throttle.pipe(new FramesTo(this.toAGW));
-        throttle.write(throttle.queryFramesInFlight());
-        var dataToFrames = new FrameAssembler(this.options, frame);
+        const dataToFrames = new FrameAssembler(this.options, frame);
         dataToFrames.pipe(throttle);
-        var connection = new Connection(dataToFrames, this.options);
-        var connectionClass = connection.constructor.name;
-        var dataToFramesClass = dataToFrames.constructor.name;
-        var throttleClass = throttle.constructor.name;
-        var that = this;
+        const connection = new Connection(dataToFrames, this.options);
+        throttle.client = connection;
+        const connectionClass = connection.constructor.name;
+        const dataToFramesClass = dataToFrames.constructor.name;
+        const throttleClass = throttle.constructor.name;
+        const that = this;
         // The pipeline of streams from connection to throttle
         // is ended by relaying the 'end' events.
         connection.on('finish', function(info) {
@@ -300,7 +314,12 @@ class ConnectionRouter extends Router {
         throttle.emitFrameFromAGW = function onFrameFromAGW(frame) {
             connection.onFrameFromAGW(frame); 
         };
-        this.server.emit('connection', connection);
+        if (frame.dataKind == 'C') { // received connection
+            connection.on('connected', function(data) {
+                throttle.write(throttle.queryFramesInFlight());
+                that.server.emit('connection', connection);
+            });
+        }
         return throttle;
     }
 
@@ -730,6 +749,9 @@ class Connection extends Stream.Duplex {
     onFrameFromAGW(frame) {
         this.log.trace('received frame.dataKind %s', frame.dataKind);
         switch(frame.dataKind) {
+        case 'C':
+            this.emit('connected', frame.data);
+            break;
         case 'd': // disconnect
             this.emit('end', frame.data);
             this._ended = true;
@@ -810,10 +832,14 @@ class Server extends EventEmitter {
         this.log.trace('new(%s, %s)', options, typeof onConnect);
         this.options = options;
         this.listening = false;
+        this.hosts = [];
         this.fromAGW = new guts.Receiver(options);
         this.onErrorOrTimeout(this.fromAGW);
         this.toAGW = new guts.Sender(options);
         this.portRouter = new PortRouter(this.toAGW, this.fromAGW, options, this);
+        this.portRouter.on('registeredCall', function(info) {
+            if ((typeof info) != 'string') this.emit('error', info);
+        });
         if (onConnect) this.on('connection', onConnect);
     }
 
@@ -947,6 +973,53 @@ class Server extends EventEmitter {
             if (callback) callback();
         }
     }
+
+    createConnection(options, onConnected) {
+        guts.checkNodeVersion();
+        const log = options.logger || guts.LogNothing;
+        log.debug('createConnection(%j, %s)',
+                  Object.assign({}, options, {logger: null}),
+                  typeof callback);
+        const localPort = guts.validatePort(options.localPort || 0);
+        if (localPort >= this.ports.length) {
+            throw guts.newRangeError(`There is no port ${localPort}.`, 'ENOENT');
+        }
+        const localAddress = guts.validateCallSign('local', options.localAddress);
+        const remoteAddress = guts.validateCallSign('remote', options.remoteAddress);
+        const via = guts.validatePath(options.via);
+        const that = this;
+        const portThrottle = this.portRouter.getClientFor({port: localPort});
+        const connectionRouter = portThrottle.client;
+        const connectionThrottle = connectionRouter.getClientFor({
+            port: localPort,
+            dataKind: 'sendConnection',
+            callTo: localAddress,
+            callFrom: remoteAddress,
+        });
+        const connection = connectionThrottle.client;
+        this.portRouter.on('registeredCall', function(info) {
+            if ((typeof info) != 'string') { // Registration failed.
+                if (info.address == localAddress) {
+                    connection.emit('error', info);
+                }
+            } else if (info == localAddress && that.hosts.indexOf(localAddress) < 0) {
+                that.hosts.push(localAddress);
+            }
+        });
+        connection.on('connected', function(data) {
+            connectionThrottle.write(connectionThrottle.queryFramesInFlight());
+            onConnected(data);
+        });
+        if (this.hosts.indexOf(localAddress) < 0) {
+            portThrottle.write({
+                dataKind: 'X', // Register
+                port: localPort,
+                callFrom: localAddress,
+            });
+        }
+        connectionThrottle.write(guts.connectFrame(localPort, localAddress, remoteAddress, via));
+        return connection;
+    } // createConnection
 
 } // Server
 

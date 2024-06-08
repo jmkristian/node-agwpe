@@ -21,22 +21,7 @@ function createConnection(options, connectListener) {
     const localPort = validatePort(options.localPort);
     const localAddress = validateCallSign('local', options.localAddress);
     const remoteAddress = validateCallSign('remote', options.remoteAddress);
-    const via = !options.via ? [] :
-          (Array.isArray(options.via) ? options.via : (options.via + '').trim().split(/[\s,]+/))
-          .map(function(v) { // all strings
-              return (v == null) ? '' : (v + '');
-          })
-          .filter(function(v) { // no strings empty or too long
-              if (v.length > 9) {
-                  throw newError(`The digipeater call sign ${v} is too long. The limit is 9 characters.`,
-                                 'ERR_INVALID_ARG_VALUE');
-              }
-              return v != '';
-          });
-    if (via.length > 7) {
-        throw newError(`${via.length} digipeaters exceeds the maximum 7.`,
-                       'ERR_INVALID_ARG_VALUE');
-    }
+    const via = guts.validatePath(options.via);
     const connectFrame = {
         port: localPort || 0,
         callTo: localAddress,
@@ -133,27 +118,7 @@ function createConnection(options, connectListener) {
         dataKind: 'X', // register call sign
         callFrom: localAddress,
     });
-    if (via.length <= 0) {
-        throttle.write({
-            dataKind: 'C', // connect
-            port: localPort,
-            callFrom: localAddress,
-            callTo: remoteAddress,
-        });
-    } else {
-        const data = Buffer.alloc(1 + (10 * via.length));
-        data[0] = via.length;
-        for (var v = 0; v < via.length; ++v) {
-            data.write(via[v].toUpperCase(), 1 + (10 * v), via[v].length, 'ascii');
-        }
-        throttle.write({
-            dataKind: 'v', // connect via digipeaters
-            port: localPort,
-            callFrom: localAddress,
-            callTo: remoteAddress,
-            data: data,
-        });
-    }
+    throttle.write(guts.connectFrame(localPort, localAddress, remoteAddress, via));
     return connection;
 }
 

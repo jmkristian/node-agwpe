@@ -99,6 +99,27 @@ function validateCallSign(name, value) {
     return value.toUpperCase();
 }
 
+function validatePath(path) {
+    if (!path) return [];
+    const via =
+        (Array.isArray(path) ? path : ('' + path).trim().split(/[\s,]+/))
+        .map(function(v) { // all strings
+            return (v == null) ? '' : (v + '');
+        })
+        .filter(function(v) { // no strings empty or too long
+            if (v.length > 9) {
+                throw newError(`The digipeater call sign ${v} is too long. The limit is 9 characters.`,
+                               'ERR_INVALID_ARG_VALUE');
+            }
+            return v != '';
+        });
+    if (via.length > 7) {
+        throw newError(`${via.length} digipeaters exceeds the maximum 7.`,
+                       'ERR_INVALID_ARG_VALUE');
+    }
+    return via;
+}
+
 function validatePort(port) {
     if (port == null) throw newError(`The TNC port number is "${port}".`, ERR_INVALID_ARG_VALUE);
     var result = (typeof port) == 'string' ? parseInt(port) : port;
@@ -582,8 +603,32 @@ class Sender extends Stream.Transform {
     }
 } // Sender
 
+function connectFrame(port, callFrom, callTo, via) {
+    if (!via || via.length <= 0) {
+        return {
+            dataKind: 'C', // connect directly
+            port: port,
+            callTo: callTo,
+            callFrom: callFrom,
+        };
+    }
+    const data = Buffer.alloc(1 + (10 * via.length));
+    data[0] = via.length;
+    for (var v = 0; v < via.length; ++v) {
+        data.write(via[v].toUpperCase(), 1 + (10 * v), via[v].length, 'ascii');
+    }
+    return {
+        dataKind: 'v', // connect via digipeaters
+        port: port,
+        callTo: callTo,
+        callFrom: callFrom,
+        data: data,
+    };
+}
+
 /** Transform binary AGWPE frames to objects. */
 exports.checkNodeVersion = checkNodeVersion;
+exports.connectFrame = connectFrame;
 exports.copyBuffer = copyBuffer;
 exports.decodePacket = decodePacket;
 exports.DefaultFrameLength = DefaultFrameLength;
@@ -601,4 +646,5 @@ exports.newTypeError = newTypeError;
 exports.Receiver = Receiver;
 exports.Sender = Sender;
 exports.validateCallSign = validateCallSign;
+exports.validatePath = validatePath;
 exports.validatePort = validatePort;
