@@ -29,7 +29,7 @@ class RawSocket extends Stream.Duplex {
 
     constructor(server, options) {
         super({
-            allowHalfOpen: false,
+            allowHalfOpen: true,
             decodeStrings: false,
             readableObjectMode: true,
             writableObjectMode: true,
@@ -47,6 +47,9 @@ class RawSocket extends Stream.Duplex {
         this.listener = function(frame) {
             that.onFrameFromAGW(frame);
         };
+        this.on('end', function() {that._ended = true;});
+        this.on('finish', function() {that._finished = true;});
+        this.on('close', function() {that._closed = true;});
     }
 
     getRecvBufferSize() {
@@ -78,7 +81,7 @@ class RawSocket extends Stream.Duplex {
                         that.throttle.on('error', function(err) {
                             that.emit('error', err);
                         });
-                        ['close', 'end', 'finish'].forEach(function(event, info) {
+                        ['close', 'end'].forEach(function(event, info) {
                             that.throttle.on(event, function(info) {
                                 that.destroy(info);
                             });
@@ -149,24 +152,21 @@ class RawSocket extends Stream.Duplex {
     }
 
     _final(callback) {
+        this.log.debug('_final(%s)', typeof callback);
+        if (callback) callback();
+        if (!this._finished) this.emit('finish');
+    }
+
+    _destroy(err, callback) {
+        this.log.debug('_destroy(%s, %s)', err || '', typeof callback);
         if (this.throttle) {
             this.throttle.removeListener('rawFrame', this.listener);
             delete this.throttle;
         }
-        if (!this.closed) {
-            this.closed = true;
-            this.emit('end');
-            this.emit('close');
-        }
-        if (callback) callback();
-    }
-
-    _destroy(err, callback) {
-        this.log.debug('_destroy(%s)', err || '');
-        if (err && !this.closed) {
-            this.emit('error', err);
-        }
-        _final(callback);
+        if (err) this.emit('error', err);
+        if (!this._finished) this.end(null, null, callback); // calls _final
+        if (!this._ended) this.emit('end');
+        if (!this._closed) this.emit('close');
     }
 } // RawSocket
 
