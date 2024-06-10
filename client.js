@@ -9,10 +9,49 @@ const newError = guts.newError;
 const validateCallSign = guts.validateCallSign;
 const validatePort = guts.validatePort;
 
+class RouterShim {
+    constructor(port, throttle, connection, connectListener) {
+        this.port = port;
+        this.throttle = throttle;
+        this.connection = connection;
+        this.connectListener = connectListener;
+    }
+    onFrameFromAGW(frame) {
+        switch(frame.dataKind) {
+        case 'G': // ports
+            try {
+                const numberOfPorts = parseInt(frame.data.toString('ascii').split(/;/)[0]);
+                if (this.port >= numberOfPorts) {
+                    this.connection.emit('error', newError(
+                        `The TNC has no port ${this.port}`,
+                        'ERR_INVALID_ARG_VALUE'));
+                }
+            } catch(err) {
+                this.connection.emit('error', err);
+            }
+            break;
+        case 'X': // registered
+            if (!(frame.data && frame.data.toString('binary') == '\x01')) {
+                this.connection.emit('error', newError(
+                    `The TNC rejected the call sign ${localAddress}`,
+                    'ERR_INVALID_ARG_VALUE'));
+            }
+            break;
+        case 'C': // connected
+            if (this.connectListener) this.connectListener(frame.data);
+            break;
+        default:
+        }
+        this.throttle.onFrameFromAGW(frame);
+    }
+}
+
 function createConnection(options, connectListener) {
     guts.checkNodeVersion();
     const log = options.logger || guts.LogNothing;
-    log.debug('createConnection(%j)', Object.assign({}, options, {logger: null}));
+    log.debug('createConnection(%j, %s)',
+              Object.assign({}, options, {logger: null}),
+              typeof callback);
     const agwOptions = {
         frameLength: options.frameLength,
         ID: options.ID,
@@ -29,9 +68,12 @@ function createConnection(options, connectListener) {
     };
     const receiver = new guts.Receiver(agwOptions);
     const sender = new guts.Sender(agwOptions);
-    const throttle = new server.ConnectionThrottle(agwOptions, connectFrame);
+    const throttle = new server.ConnectionThrottle(agwOptions, sender, connectFrame);
     const assembler = new server.FrameAssembler(agwOptions, connectFrame);
-    const connection = new server.Connection(assembler, agwOptions);
+    const connection = new server.Connection(agwOptions, assembler);
+    throttle.client = connection;
+    receiver.client = new RouterShim(localPort, throttle, connection, connectListener);
+    const that = this;
     const socket = Net.createConnection({
         host: options.host || '127.0.0.1',
         port: options.port || 8000,
@@ -39,79 +81,31 @@ function createConnection(options, connectListener) {
         log.debug('Connected to TNC');
     });
     [socket, sender, receiver, throttle, assembler].forEach(function(emitter) {
+        const emitterClass = emitter.constructor.name;
         ['error', 'timeout'].forEach(function(event) {
             emitter.on(event, function(err) {
-                log.debug('%s emitted %s(%s)', emitter.constructor.name, event, err || '');
+                log.debug('%s emitted %s(%s)', emitterClass, event, err || '');
                 connection.emit(event, err);
             });
         });
-        ['finish', 'close'].forEach(function(event) {
+        ['end', 'close'].forEach(function(event) {
             emitter.on(event, function(err) {
-                log.debug('%s emitted %s(%s)', emitter.constructor.name, event, err || '');
+                log.debug('%s emitted %s(%s)', emitterClass, event, err || '');
             });
         });
     });
-    socket.on('close', function(info) {
-        log.trace('socket emitted close(%s)', info || '');
-        connection.destroy();
-    });
-    connection.on('finish', function(info) {
-        log.trace('connection emitted finish(%s)', info || '');
-        assembler.end();
-    });
-    assembler.on('end', function(info) {
-        log.trace('assembler emitted end(%s)', info || '');
-        throttle.end();
-    });
-    throttle.on('end', function(info) {
-        log.trace('throttle emitted end(%s)', info || '');
-        // sender.end(); // Don't do that.
-        // We might still be waiting to receive a 'd' disconnect frame.
-        // In which case we don't want the sender and socket to end.
-    });
     throttle.on('close', function(info) {
-        log.debug('throttle emitted close(%s)', info || '');
-        connection.destroy();
         socket.destroy();
     });
-    throttle.emitFrameFromAGW = function(frame) {
-        connection.onFrameFromAGW(frame);
-        switch(frame.dataKind) {
-        case 'G': // ports
-            try {
-                const numberOfPorts = parseInt(frame.data.toString('ascii').split(/;/)[0]);
-                if (localPort >= numberOfPorts) {
-                    connection.emit('error', newError(
-                        `The TNC has no port ${localPort}`,
-                        'ERR_INVALID_ARG_VALUE'));
-                }
-            } catch(err) {
-                connection.emit('error', err);
-            }
-            break;
-        case 'X': // registered
-            if (!(frame.data && frame.data.toString('binary') == '\x01')) {
-                connection.emit('error', newError(
-                    `The TNC rejected the call sign ${localAddress}`,
-                    'ERR_INVALID_ARG_VALUE'));
-            }
-            break;
-        case 'C': // connected
-            if (connectListener) connectListener(frame.data);
-        default:
-        }
-    };
-    receiver.emitFrameFromAGW = function(frame) {
-        throttle.onFrameFromAGW(frame);
-        if (frame) connection.emit('frameReceived', frame);
-    };
+    socket.on('close', function(info) {
+        connection.destroy(info);
+    });
     socket.pipe(receiver);
     sender.pipe(socket);
-    assembler.pipe(throttle).pipe(new server.FramesTo(sender));
-    // We want to pipe data from the throttle to the sender, but
-    // we don't want the sender and socket to end when the throttle ends,
-    // in case we're waiting to receive a 'd' disconnect frame.
-
+    assembler.pipe(throttle);
+    connection.on('connected', function(data) {
+        throttle.write(throttle.queryFramesInFlight());
+    });
     throttle.write({dataKind: 'G'}); // ask about ports
     throttle.write({
         port: localPort,

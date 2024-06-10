@@ -475,7 +475,7 @@ class Receiver extends Stream.Writable {
                 ((options && options.frameLength) || DefaultFrameLength), // bytes
         });
         this.log = getLogger(options, this);
-        this.log.trace('new(%s)', options);
+        this.log.trace('new %j', Object.assign({}, options, {logger: undefined}));
         this.header = Buffer.alloc(HeaderLength);
         this.headerLength = 0;
         const that = this;
@@ -541,7 +541,7 @@ class Receiver extends Stream.Writable {
                 if (this.log.debug()) {
                     this.log.debug('< %s', getFrameSummary(result));
                 }
-                this.emitFrameFromAGW(result);
+                this.client.onFrameFromAGW(result);
             }
             afterTransform();
         } catch(err) {
@@ -551,7 +551,7 @@ class Receiver extends Stream.Writable {
     } // _write
 
     _final(callback) {
-        this.log.trace('_final');
+        this.log.debug('_final(%s)', typeof callback);
         if (callback) callback();
     }
 } // Receiver
@@ -569,7 +569,12 @@ class Sender extends Stream.Transform {
             defaultEncoding: options && options.encoding,
         });
         this.log = getLogger(options, this);
+        this.isFull = false;
         const that = this;
+        this.on('drain', function() {
+            that.isFull = false;
+            that.emit('notFull');
+        });
         this.on('pipe', function(from) {
             that.log.trace('pipe from %s', from.constructor.name);
         });
@@ -578,10 +583,14 @@ class Sender extends Stream.Transform {
         });
     }
 
-    _transform(chunk, encoding, afterTransform) {
+    send(frame) {
+        this.isFull = !this.write(frame);
+    }
+
+    _transform(chunk, encoding, callback) {
         if ((typeof chunk) != 'object') {
-            this.log.debug('_transform(%j, %s, %s)', chunk, encoding, afteTransform);
-            if (afterTransform) afterTransform(newTypeError(`Sender ${chunk}`));
+            this.log.debug('_transform(%j, %s, %s)', chunk, encoding, callback);
+            if (callback) callback(newTypeError(`Sender._transform(${typeof chunk} ${chunk})`));
         } else {
             try {
                 var frame = toFrame(chunk, encoding);
@@ -589,16 +598,16 @@ class Sender extends Stream.Transform {
                     this.log.debug('> %s', getFrameSummary(chunk));
                 }
                 this.push(frame);
-                if (afterTransform) afterTransform();
+                if (callback) callback();
             } catch(err) {
                 this.log.debug(err);
-                if (afterTransform) afterTransform(err);
+                if (callback) callback(err);
             }
         }
     }
 
     _flush(callback) {
-        this.log.trace('_flush');
+        this.log.debug('_flush(%s)', typeof callback);
         if (callback) callback();
     }
 } // Sender
