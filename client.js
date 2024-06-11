@@ -33,7 +33,7 @@ class RouterShim {
         case 'X': // registered
             if (!(frame.data && frame.data.toString('binary') == '\x01')) {
                 this.connection.emit('error', newError(
-                    `The TNC rejected the call sign ${localAddress}`,
+                    `The TNC rejected the call sign ${frame.callFrom}`,
                     'ERR_INVALID_ARG_VALUE'));
             }
             break;
