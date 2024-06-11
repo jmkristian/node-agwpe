@@ -109,13 +109,13 @@ function validatePath(path) {
         .filter(function(v) { // no strings empty or too long
             if (v.length > 9) {
                 throw newError(`The digipeater call sign ${v} is too long. The limit is 9 characters.`,
-                               'ERR_INVALID_ARG_VALUE');
+                               ERR_INVALID_ARG_VALUE);
             }
             return v != '';
         });
-    if (via.length > 7) {
-        throw newError(`${via.length} digipeaters exceeds the maximum 7.`,
-                       'ERR_INVALID_ARG_VALUE');
+    if (via.length > 8) {
+        throw newError(`${via.join(',')} is too long. The limit is 8 digipeaters.`,
+                       ERR_INVALID_ARG_VALUE);
     }
     return via;
 }

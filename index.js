@@ -12,4 +12,5 @@ exports.newRangeError = guts.newRangeError;
 exports.newTypeError = guts.newTypeError;
 exports.Server = server.Server;
 exports.validateCallSign = guts.validateCallSign;
+exports.validatePath = guts.validatePath;
 exports.validatePort = guts.validatePort;
