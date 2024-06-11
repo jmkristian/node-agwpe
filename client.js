@@ -7,7 +7,6 @@ const Stream = require('stream');
 
 const newError = guts.newError;
 const validateCallSign = guts.validateCallSign;
-const validatePort = guts.validatePort;
 
 class RouterShim {
     constructor(port, throttle, connection, connectListener) {
@@ -21,10 +20,10 @@ class RouterShim {
         case 'G': // ports
             try {
                 const numberOfPorts = parseInt(frame.data.toString('ascii').split(/;/)[0]);
-                if (this.port >= numberOfPorts) {
-                    this.connection.emit('error', newError(
-                        `The TNC has no port ${this.port}`,
-                        'ERR_INVALID_ARG_VALUE'));
+                if (this.port >= numberOfPorts * 2) {
+                    // Multiplying * 2 works around https://github.com/wb2osz/direwolf/issues/515
+                    this.connection.emit('error', guts.newRangeError(
+                        `The TNC has no port ${this.port}.`, 'ENOENT'));
                 }
             } catch(err) {
                 this.connection.emit('error', err);
@@ -57,12 +56,12 @@ function createConnection(options, connectListener) {
         ID: options.ID,
         logger: options.logger,
     };
-    const localPort = validatePort(options.localPort);
+    const localPort = guts.validatePort(options.localPort || 0);
     const localAddress = validateCallSign('local', options.localAddress);
     const remoteAddress = validateCallSign('remote', options.remoteAddress);
     const via = guts.validatePath(options.via);
     const connectFrame = {
-        port: localPort || 0,
+        port: localPort,
         callTo: localAddress,
         callFrom: remoteAddress,
     };

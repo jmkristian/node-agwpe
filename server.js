@@ -952,8 +952,9 @@ class Server extends EventEmitter {
                   mergeOptions(options, {logger: null}),
                   typeof callback);
         const localPort = guts.validatePort(options.localPort || 0);
-        if (localPort >= this.ports.length) {
-            throw guts.newRangeError(`There is no port ${localPort}.`, 'ENOENT');
+        if (localPort >= this.ports.length * 2) {
+            // Multiplying * 2 works around https://github.com/wb2osz/direwolf/issues/515
+            throw guts.newRangeError(`The TNC has no port ${localPort}.`, 'ENOENT');
         }
         const localAddress = guts.validateCallSign('local', options.localAddress);
         const remoteAddress = guts.validateCallSign('remote', options.remoteAddress);
