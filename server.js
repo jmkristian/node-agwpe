@@ -172,6 +172,17 @@ class PortRouter extends Router {
             fromAGW.constructor.name,
             options,
             server.constructor.name)
+        const that = this;
+        this.on('newListener', function(event, listener) {
+            if (event == 'rawFrame' && that.listenerCount('rawFrame') == 0) {
+                toAGW.write({dataKind: 'k'}); // enable reception of K frames
+            }
+        });
+        this.on('removeListener', function(event, listener) {
+            if (event == 'rawFrame' && that.listenerCount('rawFrame') == 0) {
+                toAGW.write({dataKind: 'k'}); // disable reception of K frames
+            }
+        });
     }
 
     getKey(frame) {
@@ -213,6 +224,9 @@ class PortRouter extends Router {
                 'EACCES');
             if (err) err.address = myCall;
             this.emit('registeredCall', err || myCall);
+            break;
+        case 'K':
+            this.emit('rawFrame', frame);
             break;
         default:
             client.onFrameFromAGW(frame);
@@ -435,16 +449,6 @@ class PortThrottle extends Throttle {
         // The number of possible connections is very large, so:
         this.setMaxListeners(0); // unlimited
         const that = this;
-        this.on('newListener', function(event, listener) {
-            if (event == 'rawFrame' && that.listenerCount('rawFrame') == 0) {
-                that.write({dataKind: 'k'}); // enable reception of K frames
-            }
-        });
-        this.on('removeListener', function(event, listener) {
-            if (event == 'rawFrame' && that.listenerCount('rawFrame') == 0) {
-                that.write({dataKind: 'k'}); // disable reception of K frames
-            }
-        });
         /** A ConnectionThrottle.sender may be a PortThrottle. */
         this.isFull = false;
         this.on('drain', function() {
@@ -470,9 +474,6 @@ class PortThrottle extends Throttle {
             break;
         case 'y': // frames waiting to be transmitted
             this.updateFramesInFlight(frame);
-            break;
-        case 'K':
-            this.emit('rawFrame', frame);
             break;
         default:
             this.client.onFrameFromAGW(frame);
@@ -814,7 +815,7 @@ class Server extends EventEmitter {
     }
 
     createSocket(options) {
-        return new RawSocket(this, options);
+        return new RawSocket(options, this);
     }
 
     listen(options, callback) {
