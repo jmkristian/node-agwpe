@@ -335,7 +335,7 @@ class Throttle extends Stream.Writable {
         sender.on('notFull', function() {
             that.sendBuffer();
         });
-        this.on('close', function() {that._closed = true;});
+        this.once('close', function() {that.isClosed = true;});
         this.on('pipe', function(from) {
             that.log.trace('pipe from %s', from.constructor.name);
         });
@@ -434,7 +434,7 @@ class Throttle extends Stream.Writable {
 
     _destroy(err, callback) {
         this.log.debug('_destroy(%s, %s)', err || '', typeof callback);
-        if (!this._closed) this.emit('close');
+        if (!this.isClosed) this.emit('close');
         if (callback) callback();
     }
 } // Throttle
@@ -719,8 +719,8 @@ class Connection extends Stream.Duplex {
         this.remoteAddress = toAGW.theirCall;
         this._pushable = false;
         const that = this;
-        this.on('end', function() {that._ended = true;});
-        this.on('close', function() {that._closed = true;});
+        this.once('end', function() {that.isEnded = true;});
+        this.once('close', function() {that.isClosed = true;});
         this.on('pipe', function(from) {
             that.log.trace('pipe from %s', from.constructor.name);
         });
@@ -740,7 +740,7 @@ class Connection extends Stream.Duplex {
             this.destroy();
             break;
         case 'D': // data
-            if (this._closed) {
+            if (this.isClosed) {
                 this.emit('error', newError('received data after close '
                                             + getDataSummary(frame.data)));
             } else if (!this._pushable) {
@@ -776,8 +776,8 @@ class Connection extends Stream.Duplex {
         // The documentation seems to say this.destroy() should emit
         // 'end' and 'close', but I find that doesn't always happen.
         // This works reliably:
-        if (!this._ended) this.emit('end');
-        if (!this._closed) this.emit('close');
+        if (!this.isEnded) this.emit('end');
+        if (!this.isClosed) this.emit('close');
         if (callback) callback(err);
     }
 

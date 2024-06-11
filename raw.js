@@ -104,7 +104,7 @@ class RawSocket extends Stream.Duplex {
                 this.log.trace('< %j', packet);
                 this.isReading = this.push(packet);
             } else {
-                this.log.debug('buffer overflow %s', guts.getFrameSummary(frame));
+                this.log.debug('receive buffer overflow %s', guts.getFrameSummary(frame));
             }
         } catch(err) {
             this.log.debug('onFrameFromAGW(%s)', guts.getFrameSummary(frame));
