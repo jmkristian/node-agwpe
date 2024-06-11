@@ -966,6 +966,7 @@ class Server extends EventEmitter {
             callTo: localAddress,
             callFrom: remoteAddress,
         });
+        if (options.ID) connectionThrottle.ID = options.ID;
         const connection = connectionThrottle.client;
         this.portRouter.on('registeredCall', function(info) {
             if ((typeof info) != 'string') { // Registration failed.
